@@ -1,10 +1,6 @@
-Telegram Channel Network Analyzer
-https://img.shields.io/badge/python-3.8+-blue.svg
-https://img.shields.io/badge/FastAPI-0.68+-green.svg
-https://img.shields.io/badge/license-MIT-blue.svg
-https://img.shields.io/badge/PRs-welcome-brightgreen.svg
 
-Telegram Channel Network Analyzer este un instrument avansat de analiză și vizualizare a rețelelor de canale Telegram, care detectează automat relații de similaritate, repostări și pattern-uri stilometrice între canale. Sistemul rulează în timp real și oferă o interfață web interactivă pentru explorarea rețelei sociale descoperite.
+
+Telegram Monitor este un instrument avansat de analiză și vizualizare a rețelelor de canale Telegram, care detectează automat relații de similaritate, repostări și pattern-uri stilometrice între canale. Sistemul rulează în timp real și oferă o interfață web interactivă pentru explorarea rețelei sociale descoperite.
 
 https://via.placeholder.com/800x400/0d0d0f/00f2ff?text=Telegram+Channel+Network+Analyzer
 
