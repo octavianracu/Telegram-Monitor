@@ -1,8 +1,4 @@
-
-
 Telegram Monitor este un instrument avansat de analiză și vizualizare a rețelelor de canale Telegram, care detectează automat relații de similaritate, repostări și pattern-uri stilometrice între canale. Sistemul rulează în timp real și oferă o interfață web interactivă pentru explorarea rețelei sociale descoperite.
-
-https://via.placeholder.com/800x400/0d0d0f/00f2ff?text=Telegram+Channel+Network+Analyzer
 
 ✨ Caracteristici Principale
 🎯 Analiză Multi-dimensională
