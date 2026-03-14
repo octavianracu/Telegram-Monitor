@@ -1,0 +1,1425 @@
+<!DOCTYPE html>
+<html lang="ro">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Monitor - Rețea Socială</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #050505;
+            --panel-bg: #0d0d0f;
+            --text-color: #e2e2e2;
+            --text-muted: #71717a;
+            --primary: #ffffff;
+            --secondary: #00f2ff;
+            --error: #ff0055;
+            --border: #1a1a1e;
+            --glow: 0 0 15px rgba(0, 242, 255, 0.3);
+            --header-h: 70px;
+            --success: #00ffaa;
+            --warning: #f59e0b;
+            --purple: #8b5cf6;
+            --pink: #ec4899;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            letter-spacing: -0.01em;
+        }
+
+        body::after {
+            content: " ";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.2) 50%),
+                linear-gradient(90deg, rgba(255, 0, 0, 0.02), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.02));
+            background-size: 100% 3px, 3px 100%;
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0.15;
+        }
+
+        header {
+            height: var(--header-h);
+            background: rgba(13, 13, 15, 0.8);
+            backdrop-filter: blur(12px);
+            padding: 0 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            z-index: 100;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        button {
+            padding: 10px 18px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 500;
+            font-size: 0.85rem;
+            background: var(--panel-bg);
+            color: var(--text-color);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        button:hover:not(:disabled) {
+            background: #1a1a1e;
+            border-color: var(--secondary);
+            box-shadow: var(--glow);
+            transform: translateY(-1px);
+        }
+
+        button:active {
+            transform: scale(0.96);
+        }
+
+        #btn-start {
+            background: #fff;
+            color: #000;
+            border: none;
+        }
+
+        #btn-start:hover {
+            background: var(--secondary);
+            color: #000;
+        }
+
+        #btn-stop {
+            color: var(--error);
+            border-color: rgba(255, 0, 85, 0.2);
+        }
+
+        #btn-stop:hover {
+            background: rgba(255, 0, 85, 0.1);
+            border-color: var(--error);
+            box-shadow: 0 0 15px rgba(255, 0, 85, 0.3);
+        }
+
+        #btn-reset {
+            border-color: #333;
+        }
+
+        #btn-reset:hover {
+            border-color: #aaa;
+            color: #fff;
+        }
+
+        #btn-add-channel {
+            background: #fff;
+            color: #000;
+            font-weight: 600;
+            border: none;
+            padding: 10px 20px;
+        }
+
+        #btn-add-channel:hover {
+            background: var(--secondary);
+            box-shadow: var(--glow);
+        }
+
+        .channel-input-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        input {
+            padding: 10px 15px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #000;
+            color: #fff;
+            outline: none;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            width: 200px;
+            transition: border-color 0.3s;
+        }
+
+        input:focus {
+            border-color: var(--secondary);
+            box-shadow: var(--glow);
+        }
+
+        .main-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .left-panel {
+            width: 25%;
+            background: var(--panel-bg);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            gap: 20px;
+            overflow-y: auto;
+        }
+
+        h3 {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            letter-spacing: 0.1em;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .mode-selector {
+            display: flex;
+            background: #000;
+            border-radius: 10px;
+            padding: 4px;
+            gap: 4px;
+            border: 1px solid var(--border);
+        }
+
+        .mode-item {
+            flex: 1;
+            padding: 8px 5px;
+            font-size: 0.7rem;
+            text-align: center;
+            cursor: pointer;
+            border-radius: 7px;
+            transition: all 0.2s;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .mode-item.active {
+            background: var(--secondary);
+            color: #000;
+            box-shadow: var(--glow);
+        }
+
+        .channel-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 12px;
+            background: #141416;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            border: 1px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .channel-item:hover {
+            border-color: #333;
+            background: #1a1a1e;
+        }
+
+        .channel-name {
+            font-size: 0.85rem;
+            font-family: 'JetBrains Mono', monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+            margin-right: 10px;
+        }
+
+        .channel-name.target-active {
+            color: var(--secondary);
+            font-weight: bold;
+        }
+
+        .btn-target {
+            padding: 4px;
+            border-radius: 4px;
+            width: 24px;
+            height: 24px;
+            font-size: 0.8rem;
+            background: transparent;
+            border: 1px solid #333;
+            color: #fff;
+            cursor: pointer;
+        }
+
+        .btn-target.active {
+            background: var(--secondary);
+            color: #000;
+        }
+
+        .btn-remove {
+            padding: 4px;
+            color: var(--error);
+            border-color: transparent;
+            background: transparent;
+            border: 1px solid #333;
+            cursor: pointer;
+        }
+
+        .posts-list {
+            flex: 1;
+            min-height: 300px;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 15px;
+            background: #0a0a0c;
+        }
+
+        .post-match {
+            padding: 15px;
+            background: #141416;
+            border-radius: 10px;
+            margin-bottom: 12px;
+            border-left: 3px solid var(--secondary);
+            font-size: 0.85rem;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        .score {
+            color: var(--secondary);
+            font-weight: bold;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .sentiment-badge {
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+
+        .sentiment-badge.positive {
+            background: rgba(0, 255, 170, 0.15);
+            color: #00ffaa;
+            border: 1px solid rgba(0, 255, 170, 0.3);
+        }
+
+        .sentiment-badge.negative {
+            background: rgba(255, 0, 85, 0.15);
+            color: #ff0055;
+            border: 1px solid rgba(255, 0, 85, 0.3);
+        }
+
+        .sentiment-badge.neutral {
+            background: rgba(255, 255, 255, 0.05);
+            color: #999;
+        }
+
+        .entity-box {
+            background: #0a0a0c;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 15px;
+        }
+
+        .tabs-header {
+            display: flex;
+            gap: 15px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 15px;
+        }
+
+        .tab-item {
+            padding: 8px 5px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            color: var(--text-muted);
+            position: relative;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .tab-item.active {
+            color: var(--secondary);
+        }
+
+        .tab-item.active::after {
+            content: "";
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: var(--secondary);
+            box-shadow: var(--glow);
+        }
+
+        .right-panel {
+            width: 75%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        #network-graph {
+            flex: 1;
+            background: radial-gradient(circle at center, #111 0%, #050505 100%);
+            min-height: 500px;
+        }
+
+        .status-bar {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            padding: 8px 15px;
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border: 1px solid var(--border);
+            z-index: 10;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #444;
+        }
+
+        .status-dot.active {
+            background: var(--secondary);
+            box-shadow: 0 0 10px var(--secondary);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+
+        .graph-controls {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 10;
+            display: flex;
+            gap: 10px;
+        }
+
+        select.header-dropdown {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            color: #fff;
+            border: 1px solid var(--border);
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .graph-nav-button {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            border: 1px solid var(--border);
+            color: #fff;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 1.2rem;
+        }
+
+        .graph-nav-button:hover {
+            border-color: var(--secondary);
+            box-shadow: var(--glow);
+            transform: translateY(-1px);
+        }
+
+        .graph-nav-button:active {
+            transform: scale(0.95);
+        }
+
+        .graph-nav-button.active {
+            background: var(--secondary);
+            color: #000;
+        }
+
+        .graph-nav-group {
+            display: flex;
+            gap: 5px;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 4px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+
+        #match-notification {
+            position: absolute;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--secondary);
+            color: #000;
+            font-weight: bold;
+            padding: 10px 25px;
+            border-radius: 30px;
+            z-index: 1000;
+            display: none;
+            box-shadow: 0 0 30px rgba(0, 242, 255, 0.5);
+            animation: pulse 1s infinite;
+        }
+
+        .network-stats {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            border: 1px solid var(--border);
+            z-index: 10;
+            color: var(--text-muted);
+        }
+
+        .network-stats span {
+            color: var(--secondary);
+            font-weight: bold;
+            margin: 0 5px;
+        }
+
+        .node-info {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(8px);
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            z-index: 10;
+            max-width: 300px;
+            display: none;
+            border-left: 3px solid var(--secondary);
+        }
+
+        .node-info.active {
+            display: block;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .node-info h4 {
+            color: var(--secondary);
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+        }
+
+        .node-info p {
+            font-size: 0.8rem;
+            margin: 5px 0;
+            color: var(--text-muted);
+        }
+
+        .node-info .metric-value {
+            color: #fff;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="match-notification">⚡ NOUĂ CONEXIUNE DETECTATĂ ⚡</div>
+    <div id="node-info" class="node-info"></div>
+
+    <header>
+        <div class="controls">
+            <button id="btn-start" onclick="sendCommand('start')"><span>&#9654;</span> START</button>
+            <button id="btn-pause" onclick="sendCommand('pause')"><span>&#10074;&#10074;</span> PAUZĂ</button>
+            <button id="btn-stop" onclick="sendCommand('stop')"><span>&#9632;</span> STOP</button>
+            <button id="btn-reset" onclick="performReset()"><span>&#8634;</span> RESETARE</button>
+            <button id="btn-save" onclick="sendCommand('save_request')"><span>&#10515;</span> JSON</button>
+        </div>
+
+        <div class="channel-input-group">
+            <input type="text" id="channel-input" placeholder="@canal_telegram"
+                onkeypress="if(event.key === 'Enter') addChannel()">
+            <button id="btn-add-channel" onclick="addChannel()">+ ADAUGĂ</button>
+            <input type="file" id="file-input" accept=".txt" style="display: none;" onchange="uploadTxt(event)">
+            <button id="btn-upload" onclick="document.getElementById('file-input').click()">&#8673; .TXT</button>
+        </div>
+
+        <div id="status-monitor" style="margin-left:auto; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: var(--secondary);
+                   background: rgba(0,0,0,0.3); padding: 5px 15px; border-radius: 4px;
+                   border-left: 3px solid var(--secondary); min-width: 250px;">
+            <span id="system-status">Sistem pregătit...</span>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <div class="left-panel">
+            <div class="channels-section">
+                <h3>REȚEA MONITORIZATĂ (<span id="channel-count">0</span>)</h3>
+                <input type="text" id="search-channel" placeholder="Căutare în rețea..." onkeyup="filterChannels()"
+                    style="width:100%; margin-bottom:12px;">
+
+                <div class="mode-selector">
+                    <div id="mode-repost" class="mode-item" onclick="setMode('repost')">Repostări</div>
+                    <div id="mode-similar" class="mode-item" onclick="setMode('similar')">Tematici &amp; Ideologie</div>
+                    <div id="mode-stylography" class="mode-item" onclick="setMode('stylography')">Stilografie</div>
+                </div>
+
+                <div id="channels-container"
+                    style="margin-top:15px; max-height: 250px; overflow-y:auto; overflow-x:hidden;"></div>
+            </div>
+
+            <div class="posts-list">
+                <h3>FLUX CONEXIUNI</h3>
+                <div id="posts-container" style="flex:1; overflow-y:auto; padding-right:5px;"></div>
+            </div>
+
+            <div class="entity-box">
+                <div class="tabs-header">
+                    <div id="tab-per" class="tab-item active" onclick="setEntityTab('PER')">Persoane</div>
+                    <div id="tab-org" class="tab-item" onclick="setEntityTab('ORG')">Organizații</div>
+                </div>
+                <div id="entities-list" style="max-height: 200px; overflow-y:auto;"></div>
+            </div>
+        </div>
+
+        <div class="right-panel">
+            <div class="status-bar">
+                <div id="status-dot" class="status-dot"></div>
+                <span id="status-text">DECONECTAT</span>
+                <span id="nlp-header-status"
+                    style="border-left:1px solid #333; padding-left:10px; color:var(--text-muted)">NLP: INACTIV</span>
+            </div>
+
+            <div class="graph-controls">
+                <div class="graph-nav-group">
+                    <button class="graph-nav-button" onclick="zoomIn()" title="Apropie">&#10133;</button>
+                    <button class="graph-nav-button" onclick="zoomOut()" title="Depărtează">&#10134;</button>
+                    <button class="graph-nav-button" onclick="fitGraph()" title="Potrivește în ecran">&#128470;</button>
+                </div>
+                <div class="graph-nav-group">
+                    <button class="graph-nav-button" onclick="togglePhysics()" id="btn-physics" title="Pornește/oprește fizica">&#9881;</button>
+                    <button class="graph-nav-button" onclick="exportGraph()" title="Exportă graf">&#10515;</button>
+                    <button class="graph-nav-button" onclick="resetView()" title="Resetează vedere">&#8634;</button>
+                </div>
+                <select id="graph-metric-select" class="header-dropdown" onchange="applyGraphStyle()">
+                    <option value="default">Dimensiune: Abonați</option>
+                    <option value="community">Grupuri: Comunități</option>
+                    <option value="degree">Centralitate: Grad</option>
+                    <option value="betweenness">Centralitate: Punte</option>
+                    <option value="closeness">Centralitate: Proximitate</option>
+                    <option value="eigenvector">Centralitate: Influență</option>
+                    <option value="diffusion">Algoritm: PageRank</option>
+                </select>
+            </div>
+
+            <div id="network-graph"></div>
+            
+            <div class="network-stats">
+                <span id="stats-nodes">0</span> noduri în rețea · <span id="stats-edges">0</span> conexiuni · 
+                <span id="stats-communities">0</span> comunități
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+        let nodes = new vis.DataSet([]);
+        let edges = new vis.DataSet([]);
+        let network = null;
+        let lastNodesData = [];
+        let lastState = {
+            channels: [], running: false, paused: false,
+            target_channel: null, similarity_mode: 'similar'
+        };
+        let entitiesData = { PER: {}, ORG: {} };
+        let activeEntityTab = 'PER';
+        let pendingNodes = new Set();
+        let physicsEnabled = true;
+        let communities = new Map();
+
+        // ── Funcție pentru a elimina nodurile fără conexiuni ────────────────
+        function removeIsolatedNodes() {
+            // Colectăm toate nodurile care au conexiuni
+            const connectedNodeIds = new Set();
+            edges.forEach(edge => {
+                if (edge.from) connectedNodeIds.add(edge.from);
+                if (edge.to) connectedNodeIds.add(edge.to);
+            });
+            
+            // Identificăm nodurile de eliminat (cele fără conexiuni)
+            const nodesToRemove = [];
+            nodes.forEach(node => {
+                if (!connectedNodeIds.has(node.id)) {
+                    nodesToRemove.push(node.id);
+                }
+            });
+            
+            // Eliminăm nodurile fără conexiuni
+            if (nodesToRemove.length > 0) {
+                nodesToRemove.forEach(nodeId => {
+                    nodes.remove(nodeId);
+                });
+                console.log(`Eliminate ${nodesToRemove.length} noduri izolate`);
+            }
+            
+            // Actualizăm stats
+            updateStats();
+            
+            if (network) {
+                network.redraw();
+            }
+        }
+
+        // ── WebSocket ────────────────────────────────────────────────────────
+        function connect() {
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+            ws.onopen = () => {
+                console.log("WS CONNECTED");
+                document.getElementById('status-text').innerText = 'CONECTAT';
+                document.getElementById('status-dot').className = 'status-dot';
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    console.log("WS message:", msg.type);
+                    
+                    if (msg.type === 'status') {
+                        document.getElementById('system-status').innerText = msg.msg;
+                        return;
+                    }
+                    if (msg.type === "state_update") updateUI(msg);
+                    else if (msg.type === "clear_graph") resetLocalUI();
+                    else if (msg.type === "node_update") {
+                        if (msg.node) {
+                            // Adăugăm nodul indiferent dacă are conexiuni sau nu
+                            addNodeToGraph(msg.node);
+                            
+                            if (msg.node.id && !lastState.channels.includes(msg.node.id)) {
+                                lastState.channels.push(msg.node.id);
+                                updateChannelsList();
+                            }
+                        }
+                    }
+                    else if (msg.type === "graph_update") {
+                        // 1. Adăugăm toate nodurile mai întâi
+                        if (msg.nodes && msg.nodes.length > 0) {
+                            msg.nodes.forEach(node => {
+                                addNodeToGraph(node);
+                            });
+                            
+                            // Extract communities for stats
+                            communities.clear();
+                            msg.nodes.forEach(node => {
+                                if (node.community !== undefined) {
+                                    communities.set(node.id, node.community);
+                                }
+                            });
+                        }
+                        
+                        // 2. Apoi adăugăm muchiile
+                        if (msg.edges && msg.edges.length > 0) {
+                            updateEdges(msg.edges);
+                        }
+                        
+                        // 3. La final, eliminăm nodurile fără conexiuni
+                        setTimeout(() => {
+                            removeIsolatedNodes();
+                        }, 100);
+                        
+                        updateStats();
+                    }
+                    else if (msg.type === "new_post_match") {
+                        addPostMatch(msg.data);
+                        if (msg.data && msg.data.ch1 && msg.data.ch2) {
+                            ensureNodeInGraph(msg.data.ch1);
+                            ensureNodeInGraph(msg.data.ch2);
+                            highlightConnection(msg.data.ch1, msg.data.ch2);
+                        }
+                    }
+                    else if (msg.type === "save_file") downloadJSON(msg.data, "retea_matrix.json");
+                } catch (e) {
+                    console.error("Error parsing message:", e);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log("WS CLOSED. RECONNECTING...");
+                document.getElementById('status-text').innerText = 'DECONECTAT';
+                document.getElementById('status-dot').className = 'status-dot';
+                setTimeout(connect, 3000);
+            };
+
+            ws.onerror = (error) => {
+                console.error("WebSocket error:", error);
+            };
+        }
+
+        function sendCommand(action, payload = {}) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action, ...payload }));
+            } else {
+                console.warn("WebSocket not connected");
+            }
+        }
+
+        // ── Graph Navigation ─────────────────────────────────────────────────
+        function zoomIn() {
+            if (network) {
+                const scale = network.getScale();
+                network.moveTo({ scale: scale * 1.2 });
+            }
+        }
+
+        function zoomOut() {
+            if (network) {
+                const scale = network.getScale();
+                network.moveTo({ scale: scale * 0.8 });
+            }
+        }
+
+        function fitGraph() {
+            if (network) {
+                network.fit();
+            }
+        }
+
+        function resetView() {
+            if (network) {
+                network.moveTo({
+                    position: { x: 0, y: 0 },
+                    scale: 1
+                });
+            }
+        }
+
+        function togglePhysics() {
+            if (network) {
+                physicsEnabled = !physicsEnabled;
+                network.setOptions({ physics: physicsEnabled });
+                const btn = document.getElementById('btn-physics');
+                btn.style.background = physicsEnabled ? 'var(--secondary)' : '';
+                btn.style.color = physicsEnabled ? '#000' : '';
+                btn.title = physicsEnabled ? 'Oprește fizica' : 'Pornește fizica';
+            }
+        }
+
+        function exportGraph() {
+            const graphData = {
+                nodes: nodes.get(),
+                edges: edges.get(),
+                communities: Array.from(communities.entries()),
+                timestamp: new Date().toISOString()
+            };
+            downloadJSON(graphData, `retea_${new Date().toISOString().slice(0,10)}.json`);
+        }
+
+        function highlightConnection(from, to) {
+            if (!network) return;
+            
+            // Reset all edges to default
+            edges.forEach(edge => {
+                edges.update({
+                    id: edge.id,
+                    color: { opacity: 0.2, color: '#00f2ff' }
+                });
+            });
+            
+            // Highlight the connection
+            const edgeId = `${from}-${to}`;
+            const edge = edges.get(edgeId);
+            if (edge) {
+                edges.update({
+                    id: edgeId,
+                    color: { opacity: 1, color: '#00ffaa' }
+                });
+                
+                // Highlight nodes
+                [from, to].forEach(nodeId => {
+                    const node = nodes.get(nodeId);
+                    if (node) {
+                        nodes.update({
+                            id: nodeId,
+                            color: { background: '#00ffaa', border: '#fff' }
+                        });
+                    }
+                });
+                
+                // Reset after 2 seconds
+                setTimeout(() => {
+                    edges.update({
+                        id: edgeId,
+                        color: { opacity: 0.2, color: '#00f2ff' }
+                    });
+                    [from, to].forEach(nodeId => {
+                        const node = nodes.get(nodeId);
+                        if (node) {
+                            nodes.update({
+                                id: nodeId,
+                                color: undefined
+                            });
+                        }
+                    });
+                    applyGraphStyle();
+                }, 2000);
+            }
+        }
+
+        // ── Node Management ──────────────────────────────────────────────────
+        function addNodeToGraph(nodeData) {
+            if (!nodeData || !nodeData.id) return;
+            
+            // Adăugăm nodul indiferent dacă are conexiuni sau nu
+            const nodeExists = nodes.get(nodeData.id);
+            const size = Math.min(10 + Math.log10((nodeData.subscribers || 0) + 1) * 5, 50);
+            
+            const nodeConfig = {
+                id: nodeData.id,
+                label: nodeData.label || nodeData.id,
+                size: size,
+                title: `${nodeData.label || nodeData.id}\nAbonați: ${nodeData.subscribers || 0}\nComunitate: ${nodeData.community ?? 'N/A'}`,
+                borderWidth: 2,
+                borderWidthSelected: 4,
+                font: { 
+                    color: '#ffffff', 
+                    size: 14, 
+                    strokeWidth: 3, 
+                    strokeColor: '#000000',
+                    face: 'JetBrains Mono',
+                    align: 'center'
+                }
+            };
+
+            if (nodeExists) {
+                nodes.update(nodeConfig);
+            } else {
+                nodes.add(nodeConfig);
+            }
+            
+            const existingIdx = lastNodesData.findIndex(n => n && n.id === nodeData.id);
+            if (existingIdx >= 0) {
+                lastNodesData[existingIdx] = { ...lastNodesData[existingIdx], ...nodeData };
+            } else {
+                lastNodesData.push(nodeData);
+            }
+            
+            pendingNodes.add(nodeData.id);
+            
+            if (network) {
+                network.redraw();
+            }
+            updateStats();
+        }
+
+        function ensureNodeInGraph(channelId) {
+            if (!channelId) return;
+            
+            if (!nodes.get(channelId)) {
+                nodes.add({
+                    id: channelId,
+                    label: channelId,
+                    size: 20,
+                    title: `${channelId}\nÎn așteptarea datelor...`,
+                    borderWidth: 2,
+                    font: { 
+                        color: '#ffffff', 
+                        size: 14, 
+                        strokeWidth: 3, 
+                        strokeColor: '#000000',
+                        face: 'JetBrains Mono',
+                        align: 'center'
+                    }
+                });
+            }
+        }
+
+        function updateEdges(newEdges) {
+            if (!newEdges || !newEdges.length) return;
+            
+            newEdges.forEach(edge => {
+                const edgeId = `${edge.from}-${edge.to}`;
+                const edgeData = {
+                    id: edgeId,
+                    from: edge.from,
+                    to: edge.to,
+                    value: edge.value || 1,
+                    width: Math.min((edge.value || 1) * 3, 10),
+                    color: { opacity: 0.3, color: '#00f2ff' },
+                    title: edge.title || `Conexiune: ${(edge.value || 1).toFixed(2)}`,
+                    smooth: { type: 'continuous' }
+                };
+                
+                if (edges.get(edgeId)) {
+                    edges.update(edgeData);
+                } else {
+                    edges.add(edgeData);
+                    showNotify();
+                }
+            });
+            
+            if (network) {
+                network.redraw();
+            }
+            updateStats();
+        }
+
+        // ── Stats Update ─────────────────────────────────────────────────────
+        function updateStats() {
+            document.getElementById('stats-nodes').innerText = nodes.length;
+            document.getElementById('stats-edges').innerText = edges.length;
+            
+            const uniqueCommunities = new Set(communities.values()).size;
+            document.getElementById('stats-communities').innerText = uniqueCommunities || 0;
+        }
+
+        // ── Reset ────────────────────────────────────────────────────────────
+        function performReset() {
+            resetLocalUI();
+            sendCommand('reset');
+        }
+
+        function resetLocalUI() {
+            nodes.clear();
+            edges.clear();
+            lastNodesData = [];
+            pendingNodes.clear();
+            communities.clear();
+            entitiesData = { PER: {}, ORG: {} };
+            document.getElementById('posts-container').innerHTML = '';
+            document.getElementById('node-info').classList.remove('active');
+            updateEntitiesList();
+            updateStats();
+            if (network) {
+                network.setData({ nodes, edges });
+                network.redraw();
+            }
+        }
+
+        // ── Network init ─────────────────────────────────────────────────────
+        function initNetwork() {
+            const container = document.getElementById('network-graph');
+            if (!container) {
+                console.error("Network graph container not found");
+                return;
+            }
+            
+            const options = {
+                nodes: {
+                    shape: 'dot',
+                    font: { 
+                        color: '#ffffff', 
+                        size: 14, 
+                        strokeWidth: 3, 
+                        strokeColor: '#000000',
+                        face: 'JetBrains Mono',
+                        align: 'center'
+                    },
+                    borderWidth: 2,
+                    borderWidthSelected: 4,
+                    color: {
+                        border: '#00f2ff',
+                        background: '#050505',
+                        hover: { background: '#00f2ff', border: '#fff' }
+                    },
+                    labelHighlightBold: true,
+                    scaling: {
+                        label: {
+                            enabled: true,
+                            min: 12,
+                            max: 20
+                        }
+                    }
+                },
+                edges: {
+                    color: { color: '#00f2ff', opacity: 0.2, hover: '#ffffff' },
+                    smooth: { type: 'continuous', roundness: 0.5 },
+                    width: 2,
+                    selectionWidth: 3
+                },
+                physics: {
+                    forceAtlas2Based: {
+                        gravitationalConstant: -100,
+                        centralGravity: 0.01,
+                        springLength: 150,
+                        springConstant: 0.08,
+                        damping: 0.4,
+                        avoidOverlap: 0.5
+                    },
+                    solver: 'forceAtlas2Based',
+                    stabilization: { 
+                        iterations: 200,
+                        fit: true
+                    },
+                    maxVelocity: 50,
+                    minVelocity: 0.1
+                },
+                interaction: { 
+                    hover: true,
+                    tooltipDelay: 100,
+                    navigationButtons: false,
+                    keyboard: true,
+                    multiselect: true,
+                    selectable: true,
+                    selectConnectedEdges: true
+                },
+                layout: {
+                    improvedLayout: true,
+                    randomSeed: 42
+                },
+                configure: {
+                    enabled: false
+                }
+            };
+            
+            network = new vis.Network(container, { nodes, edges }, options);
+            
+            network.once('stabilizationIterationsDone', () => {
+                network.setOptions({ physics: false });
+                physicsEnabled = false;
+                document.getElementById('btn-physics').style.background = '';
+            });
+            
+            network.on('click', function(params) {
+                if (params.nodes && params.nodes.length > 0) {
+                    showNodeInfo(params.nodes[0]);
+                } else {
+                    document.getElementById('node-info').classList.remove('active');
+                }
+            });
+            
+            network.on('doubleClick', function(params) {
+                if (params.nodes && params.nodes.length > 0) {
+                    const nodeId = params.nodes[0];
+                    network.focus(nodeId, { scale: 1.5 });
+                }
+            });
+        }
+
+        function showNodeInfo(nodeId) {
+            const node = nodes.get(nodeId);
+            const nodeData = lastNodesData.find(n => n && n.id === nodeId);
+            const infoDiv = document.getElementById('node-info');
+            
+            if (node && nodeData) {
+                const metrics = nodeData.metrics || {};
+                const connections = edges.get({
+                    filter: function(edge) {
+                        return edge.from === nodeId || edge.to === nodeId;
+                    }
+                });
+                
+                infoDiv.innerHTML = `
+                    <h4>${nodeData.label || nodeId}</h4>
+                    <p>📊 Abonați: <span class="metric-value">${nodeData.subscribers?.toLocaleString() || 0}</span></p>
+                    <p>🔗 Conexiuni: <span class="metric-value">${connections.length}</span></p>
+                    <p>👥 Comunitate: <span class="metric-value">${nodeData.community ?? 'N/A'}</span></p>
+                    <hr style="border-color:var(--border); margin:10px 0;">
+                    <p>📈 Grad: <span class="metric-value">${(metrics.degree || 0).toFixed(3)}</span></p>
+                    <p>🎯 PageRank: <span class="metric-value">${(metrics.diffusion || 0).toFixed(3)}</span></p>
+                    <p>🌉 Punte: <span class="metric-value">${(metrics.betweenness || 0).toFixed(3)}</span></p>
+                    <p>⭐ Influență: <span class="metric-value">${(metrics.eigenvector || 0).toFixed(3)}</span></p>
+                `;
+                infoDiv.classList.add('active');
+            }
+        }
+
+        // ── Graph styling ────────────────────────────────────────────────────
+        function applyGraphStyle() {
+            if (!lastNodesData || !lastNodesData.length || !network) return;
+            
+            const metric = document.getElementById('graph-metric-select').value;
+            const colors = ["#00f2ff", "#ff0055", "#00ffaa", "#f59e0b", "#8b5cf6", "#ec4899", "#ff00ff", "#00ffff"];
+
+            // Aplicăm stil doar nodurilor care sunt încă în graf
+            nodes.forEach(node => {
+                const nodeData = lastNodesData.find(n => n && n.id === node.id);
+                if (!nodeData) return;
+                
+                const metrics = nodeData.metrics || {};
+                let size = 15;
+                let color = null;
+
+                if (metric === "default") {
+                    size = 10 + Math.log10((nodeData.subscribers || 0) + 1) * 5;
+                } else if (metric === "community") {
+                    color = colors[(nodeData.community || 0) % colors.length];
+                    size = 20;
+                } else if (metrics && metrics[metric] !== undefined) {
+                    size = 10 + (metrics[metric] || 0) * 60;
+                }
+
+                const styled = {
+                    id: node.id,
+                    size: Math.min(Math.max(size, 10), 60),
+                    color: color ? { background: color, border: '#fff' } : undefined,
+                    title: `${nodeData.label || node.id}\nAbonați: ${nodeData.subscribers || 0}\nComunitate: ${nodeData.community ?? '-'}`
+                };
+
+                nodes.update(styled);
+            });
+            
+            network.redraw();
+        }
+
+        // ── UI update ────────────────────────────────────────────────────────
+        function updateUI(state) {
+            if (!state) return;
+            
+            Object.assign(lastState, state);
+
+            document.getElementById('channel-count').innerText = lastState.channels?.length || 0;
+            document.getElementById('status-dot').className =
+                `status-dot ${lastState.running && !lastState.paused ? 'active' : ''}`;
+            document.getElementById('status-text').innerText =
+                lastState.running ? (lastState.paused ? 'PAUZĂ' : 'ACTIV') : 'OPRIT';
+
+            const nlpStatus = document.getElementById('nlp-header-status');
+            nlpStatus.innerText = lastState.nlp_ready ? 'NLP: READY' : 'NLP: ÎNCĂRCARE';
+            nlpStatus.style.color = lastState.nlp_ready ? 'var(--secondary)' : '#f59e0b';
+
+            updateChannelsList();
+
+            ['repost', 'similar', 'stylography'].forEach(m => {
+                const el = document.getElementById('mode-' + m);
+                if (el) {
+                    el.className = `mode-item ${m === lastState.similarity_mode ? 'active' : ''}`;
+                }
+            });
+
+            if (state.global_entities) {
+                entitiesData = state.global_entities;
+                updateEntitiesList();
+            }
+        }
+
+        function updateChannelsList() {
+            const container = document.getElementById('channels-container');
+            container.innerHTML = '';
+            (lastState.channels || []).forEach(ch => {
+                const isTarget = ch === lastState.target_channel;
+                const div = document.createElement('div');
+                div.className = 'channel-item';
+                div.innerHTML = `
+                    <span class="channel-name ${isTarget ? 'target-active' : ''}">${ch}</span>
+                    <div style="display:flex; gap:5px;">
+                        <button class="btn-target ${isTarget ? 'active' : ''}"
+                            onclick="sendCommand('set_target',{channel:'${ch}'})">&#8857;</button>
+                        <button class="btn-remove"
+                            onclick="sendCommand('remove_channel',{channel:'${ch}'})">&times;</button>
+                    </div>`;
+                container.appendChild(div);
+            });
+        }
+
+        // ── Post match ───────────────────────────────────────────────────────
+        function addPostMatch(data) {
+            if (!data) return;
+            
+            const container = document.getElementById('posts-container');
+            const div = document.createElement('div');
+            div.className = 'post-match';
+
+            const typeIcon = {
+                'repost': '🔄',
+                'similar': '🎯',
+                'stylography': '✍️'
+            }[data.type] || '🔗';
+
+            div.innerHTML = `
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+                    <div>
+                        <span class="score">${((data.score || 0) * 100).toFixed(1)}%</span>
+                        ${data.nlp_bonus ? `<span style="color:#00ffaa; font-size:0.7rem; margin-left:5px;">+${(data.nlp_bonus*100).toFixed(0)}%</span>` : ''}
+                        <span style="margin-left:5px;">${typeIcon}</span>
+                    </div>
+                    <span style="font-size:0.7rem; color:#666">${data.time || ''}</span>
+                </div>
+                <div style="font-weight:bold; margin-bottom:5px; cursor:pointer;" 
+                     onclick="highlightConnection('${data.ch1}', '${data.ch2}')">
+                    ${data.ch1 || ''} &leftrightarrow; ${data.ch2 || ''}
+                </div>
+                <div style="font-size:0.8rem; color:#bbb; font-style:italic; max-height:60px; overflow:hidden;">
+                    "${data.ch1_msg || 'Potrivire tematică profundă'}"
+                </div>
+                ${data.type ? `<div style="margin-top:5px; font-size:0.7rem; color:#666;">Tip: ${data.type}</div>` : ''}`;
+
+            container.insertBefore(div, container.firstChild);
+            if (container.children.length > 30) {
+                container.removeChild(container.lastChild);
+            }
+            showNotify();
+        }
+
+        // ── Entities ─────────────────────────────────────────────────────────
+        function updateEntitiesList() {
+            const container = document.getElementById('entities-list');
+            container.innerHTML = '';
+            const list = entitiesData[activeEntityTab] || {};
+            const keys = Object.keys(list).sort((a, b) => (list[b]?.count || 0) - (list[a]?.count || 0));
+
+            if (!keys.length) {
+                container.innerHTML =
+                    '<div style="color:#444; font-size:0.75rem; text-align:center; padding:20px;">' +
+                    'Nicio entitate identificată</div>';
+                return;
+            }
+
+            keys.slice(0, 15).forEach(k => {
+                const item = list[k];
+                const sentiment = (item?.sum || 0) > 0 ? 'positive' : ((item?.sum || 0) < 0 ? 'negative' : 'neutral');
+                const div = document.createElement('div');
+                div.style = "display:flex; justify-content:space-between; margin-bottom:4px; " +
+                    "font-size:0.8rem; background:#111; padding:6px 10px; border-radius:6px;";
+                div.innerHTML = `<span>${k}</span>
+                    <span class="sentiment-badge ${sentiment}">${item?.count || 0}</span>`;
+                container.appendChild(div);
+            });
+        }
+
+        function setEntityTab(t) {
+            activeEntityTab = t;
+            document.getElementById('tab-per').classList.toggle('active', t === 'PER');
+            document.getElementById('tab-org').classList.toggle('active', t === 'ORG');
+            updateEntitiesList();
+        }
+
+        // ── Mode & channel helpers ───────────────────────────────────────────
+        function setMode(m) {
+            lastState.similarity_mode = m;
+            ['repost', 'similar', 'stylography'].forEach(mode => {
+                const el = document.getElementById('mode-' + mode);
+                if (el) {
+                    el.className = `mode-item ${mode === m ? 'active' : ''}`;
+                }
+            });
+            sendCommand('set_mode', { mode: m });
+        }
+
+        function addChannel() {
+            const input = document.getElementById('channel-input');
+            if (input.value) { 
+                sendCommand('add_channel', { channel: input.value }); 
+                input.value = ''; 
+            }
+        }
+
+        function filterChannels() {
+            const query = document.getElementById('search-channel').value.toLowerCase();
+            document.querySelectorAll('#channels-container .channel-item').forEach(el => {
+                const name = el.querySelector('.channel-name')?.textContent.toLowerCase() || '';
+                el.style.display = name.includes(query) ? 'flex' : 'none';
+            });
+        }
+
+        // ── Utilities ────────────────────────────────────────────────────────
+        function showNotify() {
+            const n = document.getElementById('match-notification');
+            n.style.display = 'block';
+            setTimeout(() => n.style.display = 'none', 2000);
+        }
+
+        function downloadJSON(data, filename) {
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url; 
+            a.download = filename; 
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function uploadTxt(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const content = ev.target.result;
+                const lines = content.split(/[\s,]+/);
+                lines.forEach(line => {
+                    const channel = line.trim().replace(/^@+/, '');
+                    if (channel) {
+                        sendCommand('add_channel', { channel: '@' + channel });
+                    }
+                });
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        }
+
+        // Initialize on page load
+        window.onload = () => { 
+            initNetwork(); 
+            connect(); 
+        };
+    </script>
+</body>
+
+</html>
