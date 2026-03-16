@@ -11,21 +11,20 @@
         rel="stylesheet">
     <style>
         :root {
-            --bg-color: #050505;
-            --panel-bg: #0d0d0f;
-            --text-color: #e2e2e2;
-            --text-muted: #71717a;
-            --primary: #ffffff;
-            --secondary: #00f2ff;
-            --error: #ff0055;
-            --border: #1a1a1e;
-            --glow: 0 0 15px rgba(0, 242, 255, 0.3);
-            --header-h: 70px;
-            --success: #00ffaa;
-            --warning: #f59e0b;
-            --purple: #8b5cf6;
-            --pink: #ec4899;
-        }
+    --bg-color: #050505;
+    --panel-bg: #0d0d0f;
+    --text-color: #e2e2e2;
+    --text-muted: #71717a;
+    --primary: #ffffff;
+    --secondary: #00f2ff;
+    --error: #ff0055;
+    --border: #1a1a1e;
+    --glow: 0 0 15px rgba(0, 242, 255, 0.3);
+    --header-h: 60px;
+    --success: #00ffaa;
+    --warning: #f59e0b;
+    --pink: #ec4899;
+}
 
         * {
             box-sizing: border-box;
@@ -63,7 +62,7 @@
             height: var(--header-h);
             background: rgba(13, 13, 15, 0.8);
             backdrop-filter: blur(12px);
-            padding: 0 25px;
+            padding: 0 15px;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -74,39 +73,46 @@
         .controls {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 6px;
         }
 
-        button {
-            padding: 10px 18px;
+        /* Butoanele din header - toate uniforme */
+        .controls button, 
+        .channel-input-group button {
+            padding: 6px 10px;
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: 6px;
             cursor: pointer;
             font-family: 'Outfit', sans-serif;
             font-weight: 500;
-            font-size: 0.85rem;
-            background: var(--panel-bg);
+            font-size: 0.7rem;
+            background: transparent;
             color: var(--text-color);
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 10px;
+            gap: 4px;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.03em;
+            white-space: nowrap;
+            min-width: 0;
         }
 
-        button:hover:not(:disabled) {
+        .controls button:hover:not(:disabled),
+        .channel-input-group button:hover:not(:disabled) {
             background: #1a1a1e;
             border-color: var(--secondary);
             box-shadow: var(--glow);
             transform: translateY(-1px);
         }
 
-        button:active {
+        .controls button:active,
+        .channel-input-group button:active {
             transform: scale(0.96);
         }
 
+        /* Butonul START special (alb) */
         #btn-start {
             background: #fff;
             color: #000;
@@ -118,6 +124,7 @@
             color: #000;
         }
 
+        /* Butonul STOP special (culoare eroare) */
         #btn-stop {
             color: var(--error);
             border-color: rgba(255, 0, 85, 0.2);
@@ -129,6 +136,7 @@
             box-shadow: 0 0 15px rgba(255, 0, 85, 0.3);
         }
 
+        /* Butonul RESET */
         #btn-reset {
             border-color: #333;
         }
@@ -138,35 +146,174 @@
             color: #fff;
         }
 
-        #btn-add-channel {
-            background: #fff;
-            color: #000;
-            font-weight: 600;
+        /* Butonul EXPORT JSON */
+        #btn-export {
+            background: transparent;
+            color: var(--text-color);
+            border: 1px solid var(--border);
+        }
+
+        #btn-export:hover {
+            background: #1a1a1e;
+            border-color: var(--secondary);
+            box-shadow: var(--glow);
+        }
+
+        /* Butonul PROIECTE - meniu dropdown */
+        .project-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        #btn-project {
+            min-width: 0;
+            background: transparent;
+            color: var(--text-color);
+            border: 1px solid var(--border);
+        }
+
+        #btn-project:hover {
+            background: #1a1a1e;
+            border-color: var(--secondary);
+            box-shadow: var(--glow);
+        }
+
+        #project-menu {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-top: 5px;
+            min-width: 260px;
+            z-index: 1000;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            animation: fadeIn 0.2s ease-out;
+        }
+
+        #project-menu.show {
+            display: block;
+        }
+
+        .project-menu-header {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .project-menu-header input {
+            width: 100%;
+            padding: 6px;
+            margin-bottom: 8px;
+            background: #000;
+            border: 1px solid var(--border);
+            color: #fff;
+            border-radius: 4px;
+            font-size: 0.7rem;
+        }
+
+        .project-menu-header button {
+            width: 100%;
+            margin-bottom: 4px;
+            justify-content: center;
+            padding: 6px 8px;
+            font-size: 0.7rem;
+        }
+
+        #projects-list {
+            max-height: 250px;
+            overflow-y: auto;
+            padding: 5px;
+        }
+
+        .project-item {
+            padding: 8px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .project-item:hover {
+            background: #1a1a1e;
+        }
+
+        .project-item-info {
+            flex: 1;
+        }
+
+        .project-item-name {
+            font-weight: bold;
+            font-size: 0.75rem;
+        }
+
+        .project-item-date {
+            font-size: 0.6rem;
+            color: var(--text-muted);
+        }
+
+        .project-item-delete {
+            background: transparent;
             border: none;
-            padding: 10px 20px;
+            color: var(--error);
+            cursor: pointer;
+            padding: 4px;
+            font-size: 1rem;
+        }
+
+        .project-item-delete:hover {
+            color: #ff3377;
+        }
+
+        /* Butonul Adaugă */
+        #btn-add-channel {
+            background: transparent;
+            color: var(--text-color);
+            border: 1px solid var(--border);
+            padding: 6px 10px;
+            font-weight: 500;
         }
 
         #btn-add-channel:hover {
-            background: var(--secondary);
+            background: #1a1a1e;
+            border-color: var(--secondary);
             box-shadow: var(--glow);
+            transform: translateY(-1px);
+        }
+
+        /* Butonul Upload .TXT */
+        #btn-upload {
+            background: transparent;
+            color: var(--text-color);
+            border: 1px solid var(--border);
+            padding: 6px 10px;
+        }
+
+        #btn-upload:hover {
+            background: #1a1a1e;
+            border-color: var(--success);
+            box-shadow: 0 0 15px rgba(0, 255, 170, 0.3);
         }
 
         .channel-input-group {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 6px;
         }
 
         input {
-            padding: 10px 15px;
+            padding: 6px 10px;
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: 6px;
             background: #000;
             color: #fff;
             outline: none;
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.85rem;
-            width: 200px;
+            font-size: 0.7rem;
+            width: 180px;
             transition: border-color 0.3s;
         }
 
@@ -582,6 +729,58 @@
             color: #fff;
             font-weight: bold;
         }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        #status-monitor {
+            margin-left: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            color: var(--secondary);
+            background: rgba(0,0,0,0.3);
+            padding: 5px 12px;
+            border-radius: 4px;
+            border-left: 3px solid var(--secondary);
+            min-width: 200px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Stiluri pentru butoanele de regim - adăugate */
+        .regime-buttons {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-left: 10px;
+        }
+
+        .regime-btn {
+            padding: 4px 8px;
+            font-size: 0.7rem;
+            background: transparent;
+            color: var(--text-muted);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            text-transform: uppercase;
+            transition: all 0.2s;
+        }
+
+        .regime-btn.active {
+            background: var(--secondary);
+            color: #000;
+            border-color: var(--secondary);
+            box-shadow: var(--glow);
+        }
+
+        .regime-btn:hover {
+            border-color: var(--secondary);
+        }
     </style>
 </head>
 
@@ -589,27 +788,89 @@
 
     <div id="match-notification">⚡ NOUĂ CONEXIUNE DETECTATĂ ⚡</div>
     <div id="node-info" class="node-info"></div>
+<!-- Header principal cu titlu și autor -->
+<div style="background: rgba(5, 5, 5, 0.95); border-bottom: 1px solid var(--border); padding: 8px 25px; display: flex; align-items: center; justify-content: space-between; font-family: 'Outfit', sans-serif;">
+    
+    <!-- Stânga - Logo și titlu -->
+    <div style="display: flex; align-items: center; gap: 12px;">
+        <!-- Iconiță Telegram vectorială în cyan -->
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM16.64 8.8C16.49 10.38 15.84 14.22 15.51 15.99C15.37 16.74 15.09 16.99 14.83 17.02C14.25 17.07 13.81 16.64 13.25 16.27C12.37 15.68 11.87 15.32 11.02 14.74C10.03 14.06 10.67 13.68 11.24 13.09C11.39 12.93 13.95 10.6 14 10.39C14.01 10.33 14.02 10.1 13.89 9.99C13.76 9.88 13.56 9.92 13.41 9.96C13.21 10.01 11.86 10.92 9.34 12.57C8.94 12.84 8.58 12.98 8.26 12.97C7.71 12.95 6.66 12.68 5.88 12.45C4.92 12.16 4.88 11.48 5.94 11.06C8.72 10.02 12.39 8.93 14.73 8.21C15.98 7.86 17.1 8.05 16.64 8.8Z" 
+                  fill="#00f2ff"/>
+        </svg>
+        
+        <span style="color: #fff; font-weight: 600; font-size: 1.2rem; letter-spacing: 0.5px;">TELEGRAM MONITOR</span>
+    </div>
+    
+    <!-- Dreapta - Autor și canale -->
+    <div style="display: flex; align-items: center; gap: 20px;">
+        <span style="color: var(--text-muted); font-size: 0.85rem;">Autor: <span style="color: #fff; font-weight: 500;">Octavian Racu</span></span>
+        
+        <div style="display: flex; gap: 12px;">
+            <a href="https://t.me/racumd" target="_blank" style="color: var(--text-muted); text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 4px; transition: color 0.2s;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="opacity: 0.7;">
+                    <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM16.64 8.8C16.49 10.38 15.84 14.22 15.51 15.99C15.37 16.74 15.09 16.99 14.83 17.02C14.25 17.07 13.81 16.64 13.25 16.27C12.37 15.68 11.87 15.32 11.02 14.74C10.03 14.06 10.67 13.68 11.24 13.09C11.39 12.93 13.95 10.6 14 10.39C14.01 10.33 14.02 10.1 13.89 9.99C13.76 9.88 13.56 9.92 13.41 9.96C13.21 10.01 11.86 10.92 9.34 12.57C8.94 12.84 8.58 12.98 8.26 12.97C7.71 12.95 6.66 12.68 5.88 12.45C4.92 12.16 4.88 11.48 5.94 11.06C8.72 10.02 12.39 8.93 14.73 8.21C15.98 7.86 17.1 8.05 16.64 8.8Z" 
+                          fill="#00f2ff"/>
+                </svg>
+                @racumd
+            </a>
+            <a href="https://t.me/socialcomputing" target="_blank" style="color: var(--text-muted); text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 4px; transition: color 0.2s;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="opacity: 0.7;">
+                    <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM16.64 8.8C16.49 10.38 15.84 14.22 15.51 15.99C15.37 16.74 15.09 16.99 14.83 17.02C14.25 17.07 13.81 16.64 13.25 16.27C12.37 15.68 11.87 15.32 11.02 14.74C10.03 14.06 10.67 13.68 11.24 13.09C11.39 12.93 13.95 10.6 14 10.39C14.01 10.33 14.02 10.1 13.89 9.99C13.76 9.88 13.56 9.92 13.41 9.96C13.21 10.01 11.86 10.92 9.34 12.57C8.94 12.84 8.58 12.98 8.26 12.97C7.71 12.95 6.66 12.68 5.88 12.45C4.92 12.16 4.88 11.48 5.94 11.06C8.72 10.02 12.39 8.93 14.73 8.21C15.98 7.86 17.1 8.05 16.64 8.8Z" 
+                          fill="#00f2ff"/>
+                </svg>
+                @socialcomputing
+            </a>
+        </div>
+    </div>
+</div>
 
+<!-- Adaugă spațiu între header-ul nou și bara de instrumente -->
+<div style="height: 2px; background: linear-gradient(90deg, transparent, var(--secondary), transparent); opacity: 0.3;"></div>
     <header>
         <div class="controls">
             <button id="btn-start" onclick="sendCommand('start')"><span>&#9654;</span> START</button>
             <button id="btn-pause" onclick="sendCommand('pause')"><span>&#10074;&#10074;</span> PAUZĂ</button>
             <button id="btn-stop" onclick="sendCommand('stop')"><span>&#9632;</span> STOP</button>
-            <button id="btn-reset" onclick="performReset()"><span>&#8634;</span> RESETARE</button>
-            <button id="btn-save" onclick="sendCommand('save_request')"><span>&#10515;</span> JSON</button>
+            <button id="btn-reset" onclick="performReset()"><span>&#8634;</span> RESET</button>
+            
+            <!-- Dropdown pentru proiecte - fără iconiță -->
+            <div class="project-dropdown">
+                <button id="btn-project" onclick="toggleProjectMenu()">PROIECTE ▼</button>
+                <div id="project-menu">
+                    <div class="project-menu-header">
+                        <input type="text" id="project-name" placeholder="Nume proiect">
+                        <button onclick="saveProject()">💾 Salvează</button>
+                        <button onclick="exportProject()">📦 Exportă</button>
+                        <input type="file" id="import-file" accept=".tgm,.json" style="display: none;" onchange="importProject(event)">
+                        <button onclick="document.getElementById('import-file').click()">📂 Importă</button>
+                    </div>
+                    <div id="projects-list">
+                        <div style="padding: 10px; text-align: center; color: var(--text-muted);">
+                            Încărcare proiecte...
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <button id="btn-export" onclick="exportNetwork()"><span>&#10515;</span> EXPORT</button>
+
+            <!-- Cele trei butoane pentru regimuri - ADAUGATE AICI -->
+            <div class="regime-buttons">
+                <button id="regime-direct" class="regime-btn active" onclick="setRegime('direct')">DIRECT</button>
+                <button id="regime-hibrid" class="regime-btn" onclick="setRegime('hibrid')">HIBRID</button>
+                <button id="regime-tranzitiv" class="regime-btn" onclick="setRegime('tranzitiv')">TRANZITIV</button>
+            </div>
         </div>
 
         <div class="channel-input-group">
-            <input type="text" id="channel-input" placeholder="@canal_telegram"
-                onkeypress="if(event.key === 'Enter') addChannel()">
+            <input type="text" id="channel-input" placeholder="@canal" onkeypress="if(event.key === 'Enter') addChannel()">
             <button id="btn-add-channel" onclick="addChannel()">+ ADAUGĂ</button>
             <input type="file" id="file-input" accept=".txt" style="display: none;" onchange="uploadTxt(event)">
-            <button id="btn-upload" onclick="document.getElementById('file-input').click()">&#8673; .TXT</button>
+            <button id="btn-upload" onclick="document.getElementById('file-input').click()">📁 .TXT</button>
         </div>
 
-        <div id="status-monitor" style="margin-left:auto; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: var(--secondary);
-                   background: rgba(0,0,0,0.3); padding: 5px 15px; border-radius: 4px;
-                   border-left: 3px solid var(--secondary); min-width: 250px;">
+        <div id="status-monitor">
             <span id="system-status">Sistem pregătit...</span>
         </div>
     </header>
@@ -623,8 +884,8 @@
 
                 <div class="mode-selector">
                     <div id="mode-repost" class="mode-item" onclick="setMode('repost')">Repostări</div>
-                    <div id="mode-similar" class="mode-item" onclick="setMode('similar')">Tematici &amp; Ideologie</div>
-                    <div id="mode-stylography" class="mode-item" onclick="setMode('stylography')">Stilografie</div>
+                    <div id="mode-similar" class="mode-item" onclick="setMode('similar')">Tematici</div>
+                    <div id="mode-stylography" class="mode-item" onclick="setMode('stylography')">Stilometrie</div>
                 </div>
 
                 <div id="channels-container"
@@ -657,28 +918,28 @@
                 <div class="graph-nav-group">
                     <button class="graph-nav-button" onclick="zoomIn()" title="Apropie">&#10133;</button>
                     <button class="graph-nav-button" onclick="zoomOut()" title="Depărtează">&#10134;</button>
-                    <button class="graph-nav-button" onclick="fitGraph()" title="Potrivește în ecran">&#128470;</button>
+                    <button class="graph-nav-button" onclick="fitGraph()" title="Potrivește">&#128470;</button>
                 </div>
                 <div class="graph-nav-group">
                     <button class="graph-nav-button" onclick="togglePhysics()" id="btn-physics" title="Pornește/oprește fizica">&#9881;</button>
                     <button class="graph-nav-button" onclick="exportGraph()" title="Exportă graf">&#10515;</button>
-                    <button class="graph-nav-button" onclick="resetView()" title="Resetează vedere">&#8634;</button>
+                    <button class="graph-nav-button" onclick="resetView()" title="Resetează">&#8634;</button>
                 </div>
                 <select id="graph-metric-select" class="header-dropdown" onchange="applyGraphStyle()">
-                    <option value="default">Dimensiune: Abonați</option>
-                    <option value="community">Grupuri: Comunități</option>
-                    <option value="degree">Centralitate: Grad</option>
-                    <option value="betweenness">Centralitate: Punte</option>
-                    <option value="closeness">Centralitate: Proximitate</option>
-                    <option value="eigenvector">Centralitate: Influență</option>
-                    <option value="diffusion">Algoritm: PageRank</option>
+                    <option value="default">Abonați</option>
+                    <option value="community">Comunități</option>
+                    <option value="degree">Grad</option>
+                    <option value="betweenness">Punte</option>
+                    <option value="closeness">Proximitate</option>
+                    <option value="eigenvector">Influență</option>
+                    <option value="diffusion">PageRank</option>
                 </select>
             </div>
 
             <div id="network-graph"></div>
             
             <div class="network-stats">
-                <span id="stats-nodes">0</span> noduri în rețea · <span id="stats-edges">0</span> conexiuni · 
+                <span id="stats-nodes">0</span> noduri · <span id="stats-edges">0</span> conexiuni · 
                 <span id="stats-communities">0</span> comunități
             </div>
         </div>
@@ -702,14 +963,12 @@
 
         // ── Funcție pentru a elimina nodurile fără conexiuni ────────────────
         function removeIsolatedNodes() {
-            // Colectăm toate nodurile care au conexiuni
             const connectedNodeIds = new Set();
             edges.forEach(edge => {
                 if (edge.from) connectedNodeIds.add(edge.from);
                 if (edge.to) connectedNodeIds.add(edge.to);
             });
             
-            // Identificăm nodurile de eliminat (cele fără conexiuni)
             const nodesToRemove = [];
             nodes.forEach(node => {
                 if (!connectedNodeIds.has(node.id)) {
@@ -717,7 +976,6 @@
                 }
             });
             
-            // Eliminăm nodurile fără conexiuni
             if (nodesToRemove.length > 0) {
                 nodesToRemove.forEach(nodeId => {
                     nodes.remove(nodeId);
@@ -725,12 +983,8 @@
                 console.log(`Eliminate ${nodesToRemove.length} noduri izolate`);
             }
             
-            // Actualizăm stats
             updateStats();
-            
-            if (network) {
-                network.redraw();
-            }
+            if (network) network.redraw();
         }
 
         // ── WebSocket ────────────────────────────────────────────────────────
@@ -757,9 +1011,7 @@
                     else if (msg.type === "clear_graph") resetLocalUI();
                     else if (msg.type === "node_update") {
                         if (msg.node) {
-                            // Adăugăm nodul indiferent dacă are conexiuni sau nu
                             addNodeToGraph(msg.node);
-                            
                             if (msg.node.id && !lastState.channels.includes(msg.node.id)) {
                                 lastState.channels.push(msg.node.id);
                                 updateChannelsList();
@@ -767,13 +1019,8 @@
                         }
                     }
                     else if (msg.type === "graph_update") {
-                        // 1. Adăugăm toate nodurile mai întâi
                         if (msg.nodes && msg.nodes.length > 0) {
-                            msg.nodes.forEach(node => {
-                                addNodeToGraph(node);
-                            });
-                            
-                            // Extract communities for stats
+                            msg.nodes.forEach(node => addNodeToGraph(node));
                             communities.clear();
                             msg.nodes.forEach(node => {
                                 if (node.community !== undefined) {
@@ -782,12 +1029,10 @@
                             });
                         }
                         
-                        // 2. Apoi adăugăm muchiile
                         if (msg.edges && msg.edges.length > 0) {
                             updateEdges(msg.edges);
                         }
                         
-                        // 3. La final, eliminăm nodurile fără conexiuni
                         setTimeout(() => {
                             removeIsolatedNodes();
                         }, 100);
@@ -802,7 +1047,9 @@
                             highlightConnection(msg.data.ch1, msg.data.ch2);
                         }
                     }
-                    else if (msg.type === "save_file") downloadJSON(msg.data, "retea_matrix.json");
+                    else if (msg.type === "save_file") {
+                        downloadJSON(msg.data, "retea_matrix.json");
+                    }
                 } catch (e) {
                     console.error("Error parsing message:", e);
                 }
@@ -828,6 +1075,180 @@
             }
         }
 
+        // ── Funcție nouă pentru setarea regimului ───────────────────────────
+        function setRegime(regime) {
+            // Actualizează clasa activă pe butoane
+            document.getElementById('regime-direct').classList.toggle('active', regime === 'direct');
+            document.getElementById('regime-hibrid').classList.toggle('active', regime === 'hibrid');
+            document.getElementById('regime-tranzitiv').classList.toggle('active', regime === 'tranzitiv');
+            
+            // Trimite comanda la server
+            sendCommand('set_mode', { mode: regime });
+            
+            showNotification(`🔍 Mod similaritate: ${regime.toUpperCase()}`);
+        }
+
+        // ── FUNCȚII PENTRU PROIECTE - MODIFICATE PENTRU A FOLOSI API-UL HTTP ──
+        function toggleProjectMenu() {
+            const menu = document.getElementById('project-menu');
+            menu.classList.toggle('show');
+            if (menu.classList.contains('show')) {
+                loadProjectsList();
+            }
+        }
+
+        async function loadProjectsList() {
+            try {
+                const response = await fetch('/api/project/list');
+                const data = await response.json();
+                
+                const listDiv = document.getElementById('projects-list');
+                
+                if (data.status === 'success' && data.projects && data.projects.length > 0) {
+                    listDiv.innerHTML = data.projects.map(p => `
+                        <div class="project-item">
+                            <div class="project-item-info" onclick="loadProject('${p.filename}')">
+                                <div class="project-item-name">${p.name}</div>
+                                <div class="project-item-date">${new Date(p.modified).toLocaleString()}</div>
+                            </div>
+                            <button class="project-item-delete" onclick="deleteProject('${p.filename}')">&times;</button>
+                        </div>
+                    `).join('');
+                } else {
+                    listDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-muted);">Niciun proiect salvat</div>';
+                }
+            } catch (error) {
+                console.error('Error loading projects:', error);
+                document.getElementById('projects-list').innerHTML = 
+                    '<div style="padding: 20px; text-align: center; color: var(--error);">Eroare la încărcare</div>';
+            }
+        }
+
+        async function saveProject() {
+            const projectName = document.getElementById('project-name').value.trim();
+            if (!projectName) {
+                showNotification('❌ Introdu un nume pentru proiect');
+                return;
+            }
+            
+            // Colectează datele proiectului
+            const projectData = {
+                name: projectName,
+                channels: lastState.channels,
+                nodes: nodes.get(),
+                edges: edges.get(),
+                communities: Array.from(communities.entries()),
+                entities: entitiesData,
+                posts: document.getElementById('posts-container').innerHTML,
+                mode: lastState.similarity_mode,
+                target_channel: lastState.target_channel,
+                nlp_ready: lastState.nlp_ready,
+                timestamp: new Date().toISOString()
+            };
+            
+            try {
+                const response = await fetch('/api/project/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(projectData)
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showNotification('✅ Proiect salvat cu succes');
+                    document.getElementById('project-name').value = '';
+                    toggleProjectMenu(); // Închide meniul
+                } else {
+                    showNotification(`❌ Eroare: ${result.message}`);
+                }
+            } catch (error) {
+                console.error('Save error:', error);
+                showNotification('❌ Eroare la salvare');
+            }
+        }
+
+        async function loadProject(filename) {
+            try {
+                const response = await fetch('/api/project/load', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename })
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success' && result.data) {
+                    showNotification('✅ Proiect încărcat');
+                    console.log('Project loaded:', result.data);
+                    // Aici poți procesa datele încărcate
+                    // De exemplu, poți trimite la server prin WebSocket
+                    // sendCommand('load_project_data', { data: result.data });
+                } else {
+                    showNotification(`❌ Eroare: ${result.message}`);
+                }
+            } catch (error) {
+                console.error('Load error:', error);
+                showNotification('❌ Eroare la încărcare');
+            }
+            
+            toggleProjectMenu();
+        }
+
+        async function deleteProject(filename) {
+            if (!confirm('Sigur ștergi acest proiect?')) return;
+            
+            try {
+                const response = await fetch('/api/project/delete', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename })
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showNotification('✅ Proiect șters');
+                    loadProjectsList(); // Reîncarcă lista imediat
+                } else {
+                    showNotification(`❌ ${result.message}`);
+                }
+            } catch (error) {
+                console.error('Delete error:', error);
+                showNotification('❌ Eroare la ștergere');
+            }
+        }
+
+        function exportProject() {
+            sendCommand('export_project');
+            toggleProjectMenu();
+        }
+
+        function importProject(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const projectData = JSON.parse(e.target.result);
+                    sendCommand('import_project', { data: projectData });
+                    showNotification('📤 Se importă proiectul...');
+                } catch (error) {
+                    console.error('Import error:', error);
+                    showNotification('❌ Fișier invalid');
+                }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+            toggleProjectMenu();
+        }
+
+        // ── Export rețea JSON ───────────────────────────────────────────────
+        function exportNetwork() {
+            sendCommand('save_request');
+        }
+
         // ── Graph Navigation ─────────────────────────────────────────────────
         function zoomIn() {
             if (network) {
@@ -844,17 +1265,12 @@
         }
 
         function fitGraph() {
-            if (network) {
-                network.fit();
-            }
+            if (network) network.fit();
         }
 
         function resetView() {
             if (network) {
-                network.moveTo({
-                    position: { x: 0, y: 0 },
-                    scale: 1
-                });
+                network.moveTo({ position: { x: 0, y: 0 }, scale: 1 });
             }
         }
 
@@ -882,7 +1298,6 @@
         function highlightConnection(from, to) {
             if (!network) return;
             
-            // Reset all edges to default
             edges.forEach(edge => {
                 edges.update({
                     id: edge.id,
@@ -890,7 +1305,6 @@
                 });
             });
             
-            // Highlight the connection
             const edgeId = `${from}-${to}`;
             const edge = edges.get(edgeId);
             if (edge) {
@@ -899,7 +1313,6 @@
                     color: { opacity: 1, color: '#00ffaa' }
                 });
                 
-                // Highlight nodes
                 [from, to].forEach(nodeId => {
                     const node = nodes.get(nodeId);
                     if (node) {
@@ -910,7 +1323,6 @@
                     }
                 });
                 
-                // Reset after 2 seconds
                 setTimeout(() => {
                     edges.update({
                         id: edgeId,
@@ -919,10 +1331,7 @@
                     [from, to].forEach(nodeId => {
                         const node = nodes.get(nodeId);
                         if (node) {
-                            nodes.update({
-                                id: nodeId,
-                                color: undefined
-                            });
+                            nodes.update({ id: nodeId, color: undefined });
                         }
                     });
                     applyGraphStyle();
@@ -934,7 +1343,6 @@
         function addNodeToGraph(nodeData) {
             if (!nodeData || !nodeData.id) return;
             
-            // Adăugăm nodul indiferent dacă are conexiuni sau nu
             const nodeExists = nodes.get(nodeData.id);
             const size = Math.min(10 + Math.log10((nodeData.subscribers || 0) + 1) * 5, 50);
             
@@ -970,9 +1378,7 @@
             
             pendingNodes.add(nodeData.id);
             
-            if (network) {
-                network.redraw();
-            }
+            if (network) network.redraw();
             updateStats();
         }
 
@@ -1022,9 +1428,7 @@
                 }
             });
             
-            if (network) {
-                network.redraw();
-            }
+            if (network) network.redraw();
             updateStats();
         }
 
@@ -1195,7 +1599,6 @@
             const metric = document.getElementById('graph-metric-select').value;
             const colors = ["#00f2ff", "#ff0055", "#00ffaa", "#f59e0b", "#8b5cf6", "#ec4899", "#ff00ff", "#00ffff"];
 
-            // Aplicăm stil doar nodurilor care sunt încă în graf
             nodes.forEach(node => {
                 const nodeData = lastNodesData.find(n => n && n.id === node.id);
                 if (!nodeData) return;
@@ -1383,6 +1786,13 @@
             setTimeout(() => n.style.display = 'none', 2000);
         }
 
+        function showNotification(message) {
+            const n = document.getElementById('match-notification');
+            n.textContent = message;
+            n.style.display = 'block';
+            setTimeout(() => n.style.display = 'none', 3000);
+        }
+
         function downloadJSON(data, filename) {
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
             const url = URL.createObjectURL(blob);
@@ -1418,6 +1828,15 @@
         window.onload = () => { 
             initNetwork(); 
             connect(); 
+            
+            // Click outside to close project menu
+            document.addEventListener('click', function(event) {
+                const menu = document.getElementById('project-menu');
+                const btn = document.getElementById('btn-project');
+                if (menu && btn && !btn.contains(event.target) && !menu.contains(event.target)) {
+                    menu.classList.remove('show');
+                }
+            });
         };
     </script>
 </body>

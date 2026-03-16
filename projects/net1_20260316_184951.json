@@ -1,0 +1,17 @@
+{
+  "name": "net1",
+  "channels": [],
+  "nodes": [],
+  "edges": [],
+  "communities": [],
+  "entities": {
+    "PER": {},
+    "ORG": {}
+  },
+  "posts": "",
+  "mode": "direct",
+  "target_channel": null,
+  "nlp_ready": false,
+  "timestamp": "2026-03-16T16:49:51.687Z",
+  "saved_at": "2026-03-16T18:49:51.709686"
+}
