@@ -36,11 +36,9 @@
             font-family: 'Outfit', sans-serif;
             background-color: var(--bg-color);
             color: var(--text-color);
-            height: 100vh;
+            min-height: 100vh;
             display: flex;
             flex-direction: column;
-            overflow: hidden;
-            letter-spacing: -0.01em;
         }
 
         body::after {
@@ -58,7 +56,20 @@
             opacity: 0.15;
         }
 
-        header {
+        /* Header principal - fix sus */
+        .main-header {
+            background: rgba(5, 5, 5, 0.95);
+            border-bottom: 1px solid var(--border);
+            padding: 8px 25px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-family: 'Outfit', sans-serif;
+            flex-shrink: 0;
+        }
+
+        /* Bara de instrumente - sub header */
+        .toolbar-header {
             height: var(--header-h);
             background: rgba(13, 13, 15, 0.8);
             backdrop-filter: blur(12px);
@@ -68,6 +79,7 @@
             align-items: center;
             border-bottom: 1px solid var(--border);
             z-index: 100;
+            flex-shrink: 0;
         }
 
         .controls {
@@ -322,10 +334,18 @@
             box-shadow: var(--glow);
         }
 
+        /* Container principal UNIC cu scroll */
+        .main-wrapper {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Container pentru sidebar și graf */
         .main-container {
             display: flex;
-            flex: 1;
-            overflow: hidden;
+            min-height: 600px;
         }
 
         .left-panel {
@@ -336,7 +356,6 @@
             flex-direction: column;
             padding: 20px;
             gap: 20px;
-            overflow-y: auto;
         }
 
         h3 {
@@ -540,16 +559,19 @@
 
         .right-panel {
             width: 75%;
-            height: 100%;
             display: flex;
             flex-direction: column;
+        }
+
+        .graph-container {
+            height: 500px;
             position: relative;
         }
 
         #network-graph {
-            flex: 1;
+            width: 100%;
+            height: 100%;
             background: radial-gradient(circle at center, #111 0%, #050505 100%);
-            min-height: 500px;
         }
 
         .status-bar {
@@ -670,7 +692,7 @@
             z-index: 1000;
             display: none;
             box-shadow: 0 0 30px rgba(0, 242, 255, 0.5);
-            animation: pulse 1s infinite;
+            pointer-events: none;
         }
 
         .network-stats {
@@ -781,60 +803,350 @@
         .regime-btn:hover {
             border-color: var(--secondary);
         }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--border);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--secondary);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #fff;
+        }
+
+        /* Separator */
+        .separator {
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--secondary), transparent);
+            opacity: 0.3;
+        }
+
+        /* Stats Grid - pentru casetele de statistici */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            padding: 20px;
+            background: var(--panel-bg);
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            width: 100%;
+        }
+
+        .stat-card {
+            background: rgba(13, 13, 15, 0.95);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 15px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-3px);
+            border-color: var(--secondary);
+            box-shadow: var(--glow);
+        }
+
+        .stat-card.popular-orgs {
+            border-left: 4px solid #ff0055;
+        }
+
+        .stat-card.popular-persons {
+            border-left: 4px solid #00ffaa;
+        }
+
+        .stat-card.hot-topics {
+            border-left: 4px solid #f59e0b;
+        }
+
+        .stat-card.most-quoted {
+            border-left: 4px solid #8b5cf6;
+        }
+
+        .stat-card h4 {
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 10px;
+        }
+
+        .stat-card .stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #fff;
+            margin-bottom: 5px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .stat-card .stat-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+        }
+
+        .stat-card .stat-list {
+            max-height: 100px;
+            overflow-y: auto;
+            margin-top: 10px;
+            padding-right: 5px;
+        }
+
+        .stat-card .stat-list-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            font-size: 0.75rem;
+        }
+
+        .stat-card .stat-list-item:last-child {
+            border-bottom: none;
+        }
+
+        .stat-card .item-name {
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 120px;
+        }
+
+        .stat-card .item-count {
+            color: var(--secondary);
+            font-weight: bold;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            background: rgba(0,242,255,0.1);
+            padding: 2px 6px;
+            border-radius: 10px;
+        }
+
+        .stat-card .trending-up {
+            color: #00ffaa;
+            margin-left: 5px;
+        }
+
+        .stat-card .trending-down {
+            color: #ff0055;
+            margin-left: 5px;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Top Canale Grid */
+        .channels-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            padding: 20px;
+            background: var(--panel-bg);
+            border-bottom: 1px solid var(--border);
+            width: 100%;
+        }
+
+        .channel-card {
+            background: rgba(13, 13, 15, 0.95);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 15px;
+        }
+
+        .channel-card h4 {
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .channel-card .channel-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .channel-card .channel-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .channel-card .channel-item:last-child {
+            border-bottom: none;
+        }
+
+        .channel-card .channel-name {
+            color: #fff;
+            font-size: 0.8rem;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .channel-card .channel-value {
+            color: var(--secondary);
+            font-weight: bold;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            background: rgba(0,242,255,0.1);
+            padding: 2px 6px;
+            border-radius: 10px;
+        }
+
+        .channel-card.metric-degree {
+            border-left: 4px solid #00f2ff;
+        }
+
+        .channel-card.metric-betweenness {
+            border-left: 4px solid #ff0055;
+        }
+
+        .channel-card.metric-closeness {
+            border-left: 4px solid #00ffaa;
+        }
+
+        .channel-card.metric-eigenvector {
+            border-left: 4px solid #8b5cf6;
+        }
+
+        /* Language Stats */
+        .language-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            padding: 20px;
+            background: var(--panel-bg);
+            border-bottom: 1px solid var(--border);
+            width: 100%;
+        }
+
+        .language-card {
+            background: rgba(13, 13, 15, 0.95);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 15px;
+        }
+
+        .language-card h4 {
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 15px;
+        }
+
+        .language-card .stat-big {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #fff;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .language-card .stat-label {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+
+        .language-card .progress-bar {
+            height: 8px;
+            background: var(--border);
+            border-radius: 4px;
+            margin: 15px 0;
+            overflow: hidden;
+        }
+
+        .language-card .progress-fill {
+            height: 100%;
+            background: var(--secondary);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .language-card.ru {
+            border-left: 4px solid #ff0055;
+        }
+
+        .language-card.ro {
+            border-left: 4px solid #00ffaa;
+        }
+
+        .language-card.other {
+            border-left: 4px solid #8b5cf6;
+        }
+
+        /* Panourile de jos - parte din fluxul normal */
+        .bottom-panels {
+            width: 100%;
+            background: var(--panel-bg);
+        }
     </style>
 </head>
 
 <body>
-
-    <div id="match-notification">⚡ NOUĂ CONEXIUNE DETECTATĂ ⚡</div>
-    <div id="node-info" class="node-info"></div>
-<!-- Header principal cu titlu și autor -->
-<div style="background: rgba(5, 5, 5, 0.95); border-bottom: 1px solid var(--border); padding: 8px 25px; display: flex; align-items: center; justify-content: space-between; font-family: 'Outfit', sans-serif;">
-    
-    <!-- Stânga - Logo și titlu -->
-    <div style="display: flex; align-items: center; gap: 12px;">
-        <!-- Iconiță Telegram vectorială în cyan -->
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM16.64 8.8C16.49 10.38 15.84 14.22 15.51 15.99C15.37 16.74 15.09 16.99 14.83 17.02C14.25 17.07 13.81 16.64 13.25 16.27C12.37 15.68 11.87 15.32 11.02 14.74C10.03 14.06 10.67 13.68 11.24 13.09C11.39 12.93 13.95 10.6 14 10.39C14.01 10.33 14.02 10.1 13.89 9.99C13.76 9.88 13.56 9.92 13.41 9.96C13.21 10.01 11.86 10.92 9.34 12.57C8.94 12.84 8.58 12.98 8.26 12.97C7.71 12.95 6.66 12.68 5.88 12.45C4.92 12.16 4.88 11.48 5.94 11.06C8.72 10.02 12.39 8.93 14.73 8.21C15.98 7.86 17.1 8.05 16.64 8.8Z" 
-                  fill="#00f2ff"/>
-        </svg>
+    <!-- Header principal cu titlu și autor -->
+    <div class="main-header">
+        <!-- Stânga - Logo și titlu -->
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM16.64 8.8C16.49 10.38 15.84 14.22 15.51 15.99C15.37 16.74 15.09 16.99 14.83 17.02C14.25 17.07 13.81 16.64 13.25 16.27C12.37 15.68 11.87 15.32 11.02 14.74C10.03 14.06 10.67 13.68 11.24 13.09C11.39 12.93 13.95 10.6 14 10.39C14.01 10.33 14.02 10.1 13.89 9.99C13.76 9.88 13.56 9.92 13.41 9.96C13.21 10.01 11.86 10.92 9.34 12.57C8.94 12.84 8.58 12.98 8.26 12.97C7.71 12.95 6.66 12.68 5.88 12.45C4.92 12.16 4.88 11.48 5.94 11.06C8.72 10.02 12.39 8.93 14.73 8.21C15.98 7.86 17.1 8.05 16.64 8.8Z" fill="#00f2ff"/>
+            </svg>
+            <span style="color: #fff; font-weight: 600; font-size: 1.2rem; letter-spacing: 0.5px;">TELEGRAM MONITOR</span>
+        </div>
         
-        <span style="color: #fff; font-weight: 600; font-size: 1.2rem; letter-spacing: 0.5px;">TELEGRAM MONITOR</span>
-    </div>
-    
-    <!-- Dreapta - Autor și canale -->
-    <div style="display: flex; align-items: center; gap: 20px;">
-        <span style="color: var(--text-muted); font-size: 0.85rem;">Autor: <span style="color: #fff; font-weight: 500;">Octavian Racu</span></span>
-        
-        <div style="display: flex; gap: 12px;">
-            <a href="https://t.me/racumd" target="_blank" style="color: var(--text-muted); text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 4px; transition: color 0.2s;">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="opacity: 0.7;">
-                    <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM16.64 8.8C16.49 10.38 15.84 14.22 15.51 15.99C15.37 16.74 15.09 16.99 14.83 17.02C14.25 17.07 13.81 16.64 13.25 16.27C12.37 15.68 11.87 15.32 11.02 14.74C10.03 14.06 10.67 13.68 11.24 13.09C11.39 12.93 13.95 10.6 14 10.39C14.01 10.33 14.02 10.1 13.89 9.99C13.76 9.88 13.56 9.92 13.41 9.96C13.21 10.01 11.86 10.92 9.34 12.57C8.94 12.84 8.58 12.98 8.26 12.97C7.71 12.95 6.66 12.68 5.88 12.45C4.92 12.16 4.88 11.48 5.94 11.06C8.72 10.02 12.39 8.93 14.73 8.21C15.98 7.86 17.1 8.05 16.64 8.8Z" 
-                          fill="#00f2ff"/>
-                </svg>
-                @racumd
-            </a>
-            <a href="https://t.me/socialcomputing" target="_blank" style="color: var(--text-muted); text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 4px; transition: color 0.2s;">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="opacity: 0.7;">
-                    <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM16.64 8.8C16.49 10.38 15.84 14.22 15.51 15.99C15.37 16.74 15.09 16.99 14.83 17.02C14.25 17.07 13.81 16.64 13.25 16.27C12.37 15.68 11.87 15.32 11.02 14.74C10.03 14.06 10.67 13.68 11.24 13.09C11.39 12.93 13.95 10.6 14 10.39C14.01 10.33 14.02 10.1 13.89 9.99C13.76 9.88 13.56 9.92 13.41 9.96C13.21 10.01 11.86 10.92 9.34 12.57C8.94 12.84 8.58 12.98 8.26 12.97C7.71 12.95 6.66 12.68 5.88 12.45C4.92 12.16 4.88 11.48 5.94 11.06C8.72 10.02 12.39 8.93 14.73 8.21C15.98 7.86 17.1 8.05 16.64 8.8Z" 
-                          fill="#00f2ff"/>
-                </svg>
-                @socialcomputing
-            </a>
+        <!-- Dreapta - Autor și canale -->
+        <div style="display: flex; align-items: center; gap: 20px;">
+            <span style="color: var(--text-muted); font-size: 0.85rem;">Autor: <span style="color: #fff; font-weight: 500;">Octavian Racu</span></span>
+            <div style="display: flex; gap: 12px;">
+                <a href="https://t.me/racumd" target="_blank" style="color: var(--text-muted); text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 4px; transition: color 0.2s;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="opacity: 0.7;">
+                        <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM16.64 8.8C16.49 10.38 15.84 14.22 15.51 15.99C15.37 16.74 15.09 16.99 14.83 17.02C14.25 17.07 13.81 16.64 13.25 16.27C12.37 15.68 11.87 15.32 11.02 14.74C10.03 14.06 10.67 13.68 11.24 13.09C11.39 12.93 13.95 10.6 14 10.39C14.01 10.33 14.02 10.1 13.89 9.99C13.76 9.88 13.56 9.92 13.41 9.96C13.21 10.01 11.86 10.92 9.34 12.57C8.94 12.84 8.58 12.98 8.26 12.97C7.71 12.95 6.66 12.68 5.88 12.45C4.92 12.16 4.88 11.48 5.94 11.06C8.72 10.02 12.39 8.93 14.73 8.21C15.98 7.86 17.1 8.05 16.64 8.8Z" fill="#00f2ff"/>
+                    </svg>
+                    @racumd
+                </a>
+                <a href="https://t.me/socialcomputing" target="_blank" style="color: var(--text-muted); text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 4px; transition: color 0.2s;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="opacity: 0.7;">
+                        <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM16.64 8.8C16.49 10.38 15.84 14.22 15.51 15.99C15.37 16.74 15.09 16.99 14.83 17.02C14.25 17.07 13.81 16.64 13.25 16.27C12.37 15.68 11.87 15.32 11.02 14.74C10.03 14.06 10.67 13.68 11.24 13.09C11.39 12.93 13.95 10.6 14 10.39C14.01 10.33 14.02 10.1 13.89 9.99C13.76 9.88 13.56 9.92 13.41 9.96C13.21 10.01 11.86 10.92 9.34 12.57C8.94 12.84 8.58 12.98 8.26 12.97C7.71 12.95 6.66 12.68 5.88 12.45C4.92 12.16 4.88 11.48 5.94 11.06C8.72 10.02 12.39 8.93 14.73 8.21C15.98 7.86 17.1 8.05 16.64 8.8Z" fill="#00f2ff"/>
+                    </svg>
+                    @socialcomputing
+                </a>
+            </div>
         </div>
     </div>
-</div>
 
-<!-- Adaugă spațiu între header-ul nou și bara de instrumente -->
-<div style="height: 2px; background: linear-gradient(90deg, transparent, var(--secondary), transparent); opacity: 0.3;"></div>
-    <header>
+    <!-- Separator -->
+    <div class="separator"></div>
+
+    <!-- Bara de instrumente -->
+    <header class="toolbar-header">
         <div class="controls">
             <button id="btn-start" onclick="sendCommand('start')"><span>&#9654;</span> START</button>
             <button id="btn-pause" onclick="sendCommand('pause')"><span>&#10074;&#10074;</span> PAUZĂ</button>
             <button id="btn-stop" onclick="sendCommand('stop')"><span>&#9632;</span> STOP</button>
             <button id="btn-reset" onclick="performReset()"><span>&#8634;</span> RESET</button>
             
-            <!-- Dropdown pentru proiecte - fără iconiță -->
+            <!-- Dropdown pentru proiecte -->
             <div class="project-dropdown">
                 <button id="btn-project" onclick="toggleProjectMenu()">PROIECTE ▼</button>
                 <div id="project-menu">
@@ -855,7 +1167,7 @@
             
             <button id="btn-export" onclick="exportNetwork()"><span>&#10515;</span> EXPORT</button>
 
-            <!-- Cele trei butoane pentru regimuri - ADAUGATE AICI -->
+            <!-- Cele trei butoane pentru regimuri -->
             <div class="regime-buttons">
                 <button id="regime-direct" class="regime-btn active" onclick="setRegime('direct')">DIRECT</button>
                 <button id="regime-hibrid" class="regime-btn" onclick="setRegime('hibrid')">HIBRID</button>
@@ -875,77 +1187,198 @@
         </div>
     </header>
 
-    <div class="main-container">
-        <div class="left-panel">
-            <div class="channels-section">
-                <h3>REȚEA MONITORIZATĂ (<span id="channel-count">0</span>)</h3>
-                <input type="text" id="search-channel" placeholder="Căutare în rețea..." onkeyup="filterChannels()"
-                    style="width:100%; margin-bottom:12px;">
+    <!-- Container pentru notificări -->
+    <div id="match-notification">⚡ NOUĂ CONEXIUNE DETECTATĂ ⚡</div>
+    <div id="node-info" class="node-info"></div>
 
-                <div class="mode-selector">
-                    <div id="mode-repost" class="mode-item" onclick="setMode('repost')">Repostări</div>
-                    <div id="mode-similar" class="mode-item" onclick="setMode('similar')">Tematici</div>
-                    <div id="mode-stylography" class="mode-item" onclick="setMode('stylography')">Stilometrie</div>
+    <!-- Main wrapper - UN SINGUR CONTAINER CU SCROLL -->
+    <div class="main-wrapper">
+        <!-- Main container - sidebar și graf -->
+        <div class="main-container">
+            <!-- Sidebar stânga -->
+            <div class="left-panel">
+                <div class="channels-section">
+                    <h3>REȚEA MONITORIZATĂ (<span id="channel-count">0</span>)</h3>
+                    <input type="text" id="search-channel" placeholder="Căutare în rețea..." onkeyup="filterChannels()"
+                        style="width:100%; margin-bottom:12px;">
+
+                    <div class="mode-selector">
+                        <div id="mode-repost" class="mode-item" onclick="setMode('repost')">Repostări</div>
+                        <div id="mode-similar" class="mode-item" onclick="setMode('similar')">Tematici</div>
+                        <div id="mode-stylography" class="mode-item" onclick="setMode('stylography')">Stilometrie</div>
+                    </div>
+
+                    <div id="channels-container"
+                        style="margin-top:15px; max-height: 250px; overflow-y:auto; overflow-x:hidden;"></div>
                 </div>
 
-                <div id="channels-container"
-                    style="margin-top:15px; max-height: 250px; overflow-y:auto; overflow-x:hidden;"></div>
-            </div>
-
-            <div class="posts-list">
-                <h3>FLUX CONEXIUNI</h3>
-                <div id="posts-container" style="flex:1; overflow-y:auto; padding-right:5px;"></div>
-            </div>
-
-            <div class="entity-box">
-                <div class="tabs-header">
-                    <div id="tab-per" class="tab-item active" onclick="setEntityTab('PER')">Persoane</div>
-                    <div id="tab-org" class="tab-item" onclick="setEntityTab('ORG')">Organizații</div>
+                <div class="posts-list">
+                    <h3>FLUX CONEXIUNI</h3>
+                    <div id="posts-container" style="flex:1; overflow-y:auto; padding-right:5px;"></div>
                 </div>
-                <div id="entities-list" style="max-height: 200px; overflow-y:auto;"></div>
+
+                <div class="entity-box">
+                    <div class="tabs-header">
+                        <div id="tab-per" class="tab-item active" onclick="setEntityTab('PER')">Persoane</div>
+                        <div id="tab-org" class="tab-item" onclick="setEntityTab('ORG')">Organizații</div>
+                    </div>
+                    <div id="entities-list" style="max-height: 200px; overflow-y:auto;"></div>
+                </div>
+            </div>
+
+            <!-- Panou dreapta - doar graful -->
+            <div class="right-panel">
+                <div class="graph-container">
+                    <div class="status-bar">
+                        <div id="status-dot" class="status-dot"></div>
+                        <span id="status-text">DECONECTAT</span>
+                        <span id="nlp-header-status"
+                            style="border-left:1px solid #333; padding-left:10px; color:var(--text-muted)">NLP: INACTIV</span>
+                    </div>
+
+                    <div class="graph-controls">
+                        <div class="graph-nav-group">
+                            <button class="graph-nav-button" onclick="zoomIn()" title="Apropie">&#10133;</button>
+                            <button class="graph-nav-button" onclick="zoomOut()" title="Depărtează">&#10134;</button>
+                            <button class="graph-nav-button" onclick="fitGraph()" title="Potrivește">&#128470;</button>
+                        </div>
+                        <div class="graph-nav-group">
+                            <button class="graph-nav-button" onclick="togglePhysics()" id="btn-physics" title="Pornește/oprește fizica">&#9881;</button>
+                            <button class="graph-nav-button" onclick="exportGraph()" title="Exportă graf">&#10515;</button>
+                            <button class="graph-nav-button" onclick="resetView()" title="Resetează">&#8634;</button>
+                        </div>
+                        <select id="graph-metric-select" class="header-dropdown" onchange="applyGraphStyle()">
+                            <option value="default">Abonați</option>
+                            <option value="community">Comunități</option>
+                            <option value="degree">Grad</option>
+                            <option value="betweenness">Punte</option>
+                            <option value="closeness">Proximitate</option>
+                            <option value="eigenvector">Influență</option>
+                            <option value="diffusion">PageRank</option>
+                        </select>
+                    </div>
+
+                    <div id="network-graph"></div>
+                    
+                    <div class="network-stats">
+                        <span id="stats-nodes">0</span> noduri · <span id="stats-edges">0</span> conexiuni · 
+                        <span id="stats-communities">0</span> comunități
+                    </div>
+                </div>
             </div>
         </div>
 
-        <div class="right-panel">
-            <div class="status-bar">
-                <div id="status-dot" class="status-dot"></div>
-                <span id="status-text">DECONECTAT</span>
-                <span id="nlp-header-status"
-                    style="border-left:1px solid #333; padding-left:10px; color:var(--text-muted)">NLP: INACTIV</span>
+        <!-- Panourile de jos - în ACELAȘI container, SUB sidebar și graf -->
+        <div class="bottom-panels">
+            <!-- Stats Grid - Casete de statistici -->
+            <div class="stats-grid">
+                <!-- Cele mai populare organizații azi -->
+                <div class="stat-card popular-orgs" id="stat-orgs" onclick="showEntityDetails('ORG')">
+                    <h4>🏢 Organizații populare azi</h4>
+                    <div class="stat-value" id="orgs-today-count">0</div>
+                    <div class="stat-label">menționări în ultimele 24h</div>
+                    <div class="stat-list" id="orgs-today-list">
+                        <div style="color: var(--text-muted); text-align: center;">Se încarcă...</div>
+                    </div>
+                </div>
+                
+                <!-- Cele mai populare persoane azi -->
+                <div class="stat-card popular-persons" id="stat-persons" onclick="showEntityDetails('PER')">
+                    <h4>👤 Persoane populare azi</h4>
+                    <div class="stat-value" id="persons-today-count">0</div>
+                    <div class="stat-label">menționări în ultimele 24h</div>
+                    <div class="stat-list" id="persons-today-list">
+                        <div style="color: var(--text-muted); text-align: center;">Se încarcă...</div>
+                    </div>
+                </div>
+                
+                <!-- Teme fierbinți azi -->
+                <div class="stat-card hot-topics" id="stat-topics">
+                    <h4>🔥 Teme fierbinți azi</h4>
+                    <div class="stat-value" id="topics-today-count">0</div>
+                    <div class="stat-label">cuvinte cheie în trend</div>
+                    <div class="stat-list" id="topics-today-list">
+                        <div style="color: var(--text-muted); text-align: center;">Se încarcă...</div>
+                    </div>
+                </div>
+                
+                <!-- Cele mai citate canale azi -->
+                <div class="stat-card most-quoted" id="stat-channels">
+                    <h4>📢 Canale citate azi</h4>
+                    <div class="stat-value" id="channels-today-count">0</div>
+                    <div class="stat-label">canale în discuții</div>
+                    <div class="stat-list" id="channels-today-list">
+                        <div style="color: var(--text-muted); text-align: center;">Se încarcă...</div>
+                    </div>
+                </div>
             </div>
 
-            <div class="graph-controls">
-                <div class="graph-nav-group">
-                    <button class="graph-nav-button" onclick="zoomIn()" title="Apropie">&#10133;</button>
-                    <button class="graph-nav-button" onclick="zoomOut()" title="Depărtează">&#10134;</button>
-                    <button class="graph-nav-button" onclick="fitGraph()" title="Potrivește">&#128470;</button>
+            <!-- Top Canale după Centralități -->
+            <div class="channels-grid">
+                <div class="channel-card metric-degree">
+                    <h4>🎯 Top canale - Grad</h4>
+                    <div class="channel-list" id="top-degree-list">
+                        <div style="color: var(--text-muted); text-align: center;">Se încarcă...</div>
+                    </div>
                 </div>
-                <div class="graph-nav-group">
-                    <button class="graph-nav-button" onclick="togglePhysics()" id="btn-physics" title="Pornește/oprește fizica">&#9881;</button>
-                    <button class="graph-nav-button" onclick="exportGraph()" title="Exportă graf">&#10515;</button>
-                    <button class="graph-nav-button" onclick="resetView()" title="Resetează">&#8634;</button>
+                
+                <div class="channel-card metric-betweenness">
+                    <h4>🌉 Top canale - Punte</h4>
+                    <div class="channel-list" id="top-betweenness-list">
+                        <div style="color: var(--text-muted); text-align: center;">Se încarcă...</div>
+                    </div>
                 </div>
-                <select id="graph-metric-select" class="header-dropdown" onchange="applyGraphStyle()">
-                    <option value="default">Abonați</option>
-                    <option value="community">Comunități</option>
-                    <option value="degree">Grad</option>
-                    <option value="betweenness">Punte</option>
-                    <option value="closeness">Proximitate</option>
-                    <option value="eigenvector">Influență</option>
-                    <option value="diffusion">PageRank</option>
-                </select>
+                
+                <div class="channel-card metric-closeness">
+                    <h4>⚡ Top canale - Proximitate</h4>
+                    <div class="channel-list" id="top-closeness-list">
+                        <div style="color: var(--text-muted); text-align: center;">Se încarcă...</div>
+                    </div>
+                </div>
+                
+                <div class="channel-card metric-eigenvector">
+                    <h4>👑 Top canale - Influență</h4>
+                    <div class="channel-list" id="top-eigenvector-list">
+                        <div style="color: var(--text-muted); text-align: center;">Se încarcă...</div>
+                    </div>
+                </div>
             </div>
 
-            <div id="network-graph"></div>
-            
-            <div class="network-stats">
-                <span id="stats-nodes">0</span> noduri · <span id="stats-edges">0</span> conexiuni · 
-                <span id="stats-communities">0</span> comunități
+            <!-- Statistici Limbă -->
+            <div class="language-stats">
+                <div class="language-card ru">
+                    <h4>🇷🇺 Postări în rusă</h4>
+                    <div class="stat-big" id="posts-ru-count">0</div>
+                    <div class="stat-label">postări</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="posts-ru-progress" style="width: 0%"></div>
+                    </div>
+                </div>
+                
+                <div class="language-card ro">
+                    <h4>🇷🇴 Postări în română</h4>
+                    <div class="stat-big" id="posts-ro-count">0</div>
+                    <div class="stat-label">postări</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="posts-ro-progress" style="width: 0%"></div>
+                    </div>
+                </div>
+                
+                <div class="language-card other">
+                    <h4>🌐 Alte limbi</h4>
+                    <div class="stat-big" id="posts-other-count">0</div>
+                    <div class="stat-label">postări</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="posts-other-progress" style="width: 0%"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
+        // [ACELAȘI SCRIPT CA ÎNAINTE]
+        // Păstrează tot script-ul exact ca în versiunile anterioare
         let ws;
         let nodes = new vis.DataSet([]);
         let edges = new vis.DataSet([]);
@@ -953,13 +1386,46 @@
         let lastNodesData = [];
         let lastState = {
             channels: [], running: false, paused: false,
-            target_channel: null, similarity_mode: 'similar'
+            target_channel: null, similarity_mode: 'similar',
+            nlp_ready: false
         };
         let entitiesData = { PER: {}, ORG: {} };
         let activeEntityTab = 'PER';
         let pendingNodes = new Set();
         let physicsEnabled = true;
         let communities = new Map();
+        let notificationTimer = null;
+        let modeUpdateTimer = null;
+
+        // Variabile pentru a urmări starea curentă a butoanelor
+        let currentRegime = 'direct'; // 'direct', 'hibrid', 'tranzitiv'
+        let currentAnalysisMode = 'similar'; // 'repost', 'similar', 'stylography'
+
+        // Statistici limbă
+        let languageStats = {
+            ru: 0,
+            ro: 0,
+            other: 0,
+            total: 0
+        };
+
+        // ── STATISTICI ZILNICE ─────────────────────────────────────────────
+        let dailyStats = {
+            orgs: {},
+            persons: {},
+            topics: {},
+            channels: {},
+            lastUpdate: null
+        };
+
+        // Cuvinte comune de ignorat în teme
+        const commonWords = [
+            'pentru', 'putem', 'poate', 'trebuie', 'acest', 'acesta', 'aceste',
+            'despre', 'între', 'înainte', 'după', 'toate', 'toți', 'toată',
+            'https', 'http', 'www', 'com', 'org', 'ro', 'md', 'telegram', 'este',
+            'sunt', 'mai', 'foarte', 'mult', 'multe', 'putea', 'trebui', 'când',
+            'unde', 'cum', 'ceva', 'cineva', 'toată', 'toți', 'toate', 'acolo'
+        ];
 
         // ── Funcție pentru a elimina nodurile fără conexiuni ────────────────
         function removeIsolatedNodes() {
@@ -1001,6 +1467,12 @@
             ws.onmessage = (event) => {
                 try {
                     const msg = JSON.parse(event.data);
+                    
+                    // Ignoră mesajele de ping
+                    if (msg.type === 'ping') {
+                        return;
+                    }
+                    
                     console.log("WS message:", msg.type);
                     
                     if (msg.type === 'status') {
@@ -1038,6 +1510,8 @@
                         }, 100);
                         
                         updateStats();
+                        updateDailyStats();
+                        updateTopChannels();
                     }
                     else if (msg.type === "new_post_match") {
                         addPostMatch(msg.data);
@@ -1046,6 +1520,7 @@
                             ensureNodeInGraph(msg.data.ch2);
                             highlightConnection(msg.data.ch1, msg.data.ch2);
                         }
+                        updateDailyStats();
                     }
                     else if (msg.type === "save_file") {
                         downloadJSON(msg.data, "retea_matrix.json");
@@ -1075,8 +1550,11 @@
             }
         }
 
-        // ── Funcție nouă pentru setarea regimului ───────────────────────────
+        // ── Funcție pentru setarea regimului ───────────────────────────
         function setRegime(regime) {
+            // Salvează regimul curent
+            currentRegime = regime;
+            
             // Actualizează clasa activă pe butoane
             document.getElementById('regime-direct').classList.toggle('active', regime === 'direct');
             document.getElementById('regime-hibrid').classList.toggle('active', regime === 'hibrid');
@@ -1086,6 +1564,23 @@
             sendCommand('set_mode', { mode: regime });
             
             showNotification(`🔍 Mod similaritate: ${regime.toUpperCase()}`);
+        }
+
+        // ── Funcție pentru setarea modului de analiză (repost, similar, stylography)
+        function setMode(m) {
+            // Salvează modul curent
+            currentAnalysisMode = m;
+            
+            // Actualizează UI
+            ['repost', 'similar', 'stylography'].forEach(mode => {
+                const el = document.getElementById('mode-' + mode);
+                if (el) {
+                    el.className = `mode-item ${mode === m ? 'active' : ''}`;
+                }
+            });
+            
+            // Trimite comanda la server
+            sendCommand('set_mode', { mode: m });
         }
 
         // ── FUNCȚII PENTRU PROIECTE - MODIFICATE PENTRU A FOLOSI API-UL HTTP ──
@@ -1182,8 +1677,6 @@
                     showNotification('✅ Proiect încărcat');
                     console.log('Project loaded:', result.data);
                     // Aici poți procesa datele încărcate
-                    // De exemplu, poți trimite la server prin WebSocket
-                    // sendCommand('load_project_data', { data: result.data });
                 } else {
                     showNotification(`❌ Eroare: ${result.message}`);
                 }
@@ -1441,6 +1934,286 @@
             document.getElementById('stats-communities').innerText = uniqueCommunities || 0;
         }
 
+        // Funcție pentru actualizarea top canale după metrici
+        function updateTopChannels() {
+            const degreeList = document.getElementById('top-degree-list');
+            const betweennessList = document.getElementById('top-betweenness-list');
+            const closenessList = document.getElementById('top-closeness-list');
+            const eigenvectorList = document.getElementById('top-eigenvector-list');
+            
+            if (!lastNodesData || lastNodesData.length === 0) {
+                degreeList.innerHTML = '<div style="color: var(--text-muted); text-align: center;">Nu sunt date</div>';
+                betweennessList.innerHTML = '<div style="color: var(--text-muted); text-align: center;">Nu sunt date</div>';
+                closenessList.innerHTML = '<div style="color: var(--text-muted); text-align: center;">Nu sunt date</div>';
+                eigenvectorList.innerHTML = '<div style="color: var(--text-muted); text-align: center;">Nu sunt date</div>';
+                return;
+            }
+            
+            // Sort by degree
+            const topDegree = [...lastNodesData]
+                .filter(n => n.metrics?.degree)
+                .sort((a, b) => (b.metrics?.degree || 0) - (a.metrics?.degree || 0))
+                .slice(0, 5);
+            
+            degreeList.innerHTML = topDegree.length ? topDegree.map(n => `
+                <div class="channel-item">
+                    <span class="channel-name">${n.label || n.id}</span>
+                    <span class="channel-value">${(n.metrics.degree * 100).toFixed(1)}%</span>
+                </div>
+            `).join('') : '<div style="color: var(--text-muted); text-align: center;">Nu sunt date</div>';
+            
+            // Sort by betweenness
+            const topBetweenness = [...lastNodesData]
+                .filter(n => n.metrics?.betweenness)
+                .sort((a, b) => (b.metrics?.betweenness || 0) - (a.metrics?.betweenness || 0))
+                .slice(0, 5);
+            
+            betweennessList.innerHTML = topBetweenness.length ? topBetweenness.map(n => `
+                <div class="channel-item">
+                    <span class="channel-name">${n.label || n.id}</span>
+                    <span class="channel-value">${(n.metrics.betweenness * 100).toFixed(1)}%</span>
+                </div>
+            `).join('') : '<div style="color: var(--text-muted); text-align: center;">Nu sunt date</div>';
+            
+            // Sort by closeness
+            const topCloseness = [...lastNodesData]
+                .filter(n => n.metrics?.closeness)
+                .sort((a, b) => (b.metrics?.closeness || 0) - (a.metrics?.closeness || 0))
+                .slice(0, 5);
+            
+            closenessList.innerHTML = topCloseness.length ? topCloseness.map(n => `
+                <div class="channel-item">
+                    <span class="channel-name">${n.label || n.id}</span>
+                    <span class="channel-value">${(n.metrics.closeness * 100).toFixed(1)}%</span>
+                </div>
+            `).join('') : '<div style="color: var(--text-muted); text-align: center;">Nu sunt date</div>';
+            
+            // Sort by eigenvector
+            const topEigenvector = [...lastNodesData]
+                .filter(n => n.metrics?.eigenvector)
+                .sort((a, b) => (b.metrics?.eigenvector || 0) - (a.metrics?.eigenvector || 0))
+                .slice(0, 5);
+            
+            eigenvectorList.innerHTML = topEigenvector.length ? topEigenvector.map(n => `
+                <div class="channel-item">
+                    <span class="channel-name">${n.label || n.id}</span>
+                    <span class="channel-value">${(n.metrics.eigenvector * 100).toFixed(1)}%</span>
+                </div>
+            `).join('') : '<div style="color: var(--text-muted); text-align: center;">Nu sunt date</div>';
+        }
+
+        // ── Funcție pentru actualizarea statisticilor zilnice
+        function updateDailyStats() {
+            // Verifică dacă au trecut mai mult de 1h de la ultima actualizare
+            const now = new Date();
+            if (dailyStats.lastUpdate) {
+                const hoursDiff = (now - new Date(dailyStats.lastUpdate)) / (1000 * 60 * 60);
+                if (hoursDiff < 1 && Object.keys(dailyStats.orgs).length > 0) return;
+            }
+            
+            // Colectează statistici din postările recente
+            const posts = document.querySelectorAll('#posts-container .post-match');
+            
+            // Resetăm statisticile zilnice
+            const newStats = {
+                orgs: {},
+                persons: {},
+                topics: {},
+                channels: {},
+                total: 0
+            };
+            
+            // Resetăm statisticile de limbă
+            languageStats = {
+                ru: 0,
+                ro: 0,
+                other: 0,
+                total: 0
+            };
+            
+            posts.forEach(post => {
+                // Extrage entități din postare
+                const postText = post.textContent || '';
+                
+                // Detectează limba aproximativ
+                const cyrillicCount = (postText.match(/[а-яА-Я]/g) || []).length;
+                const latinCount = (postText.match(/[a-zA-ZăâîșțĂÂÎȘȚ]/g) || []).length;
+                
+                if (cyrillicCount > latinCount * 2) {
+                    languageStats.ru++;
+                } else if (latinCount > cyrillicCount * 2) {
+                    languageStats.ro++;
+                } else {
+                    languageStats.other++;
+                }
+                languageStats.total++;
+                
+                const channel1 = post.querySelector('div[onclick]')?.textContent.split('↔')[0]?.trim() || '';
+                const channel2 = post.querySelector('div[onclick]')?.textContent.split('↔')[1]?.trim() || '';
+                
+                // Numără canalele menționate
+                if (channel1 && channel1 !== 'undefined') {
+                    newStats.channels[channel1] = (newStats.channels[channel1] || 0) + 1;
+                }
+                if (channel2 && channel2 !== 'undefined') {
+                    newStats.channels[channel2] = (newStats.channels[channel2] || 0) + 1;
+                }
+                
+                // Extrage cuvinte cheie
+                const words = postText.toLowerCase().split(/\s+/);
+                words.forEach(word => {
+                    word = word.replace(/[.,!?;:()]/g, '');
+                    if (word.length > 4 && !commonWords.includes(word) && !word.includes('http')) {
+                        newStats.topics[word] = (newStats.topics[word] || 0) + 1;
+                    }
+                });
+                
+                newStats.total++;
+            });
+            
+            // Actualizează entitățile din datele globale
+            if (entitiesData && entitiesData.ORG) {
+                Object.entries(entitiesData.ORG).forEach(([name, data]) => {
+                    newStats.orgs[name] = (data.count || 0);
+                });
+            }
+            
+            if (entitiesData && entitiesData.PER) {
+                Object.entries(entitiesData.PER).forEach(([name, data]) => {
+                    newStats.persons[name] = (data.count || 0);
+                });
+            }
+            
+            dailyStats = {
+                ...newStats,
+                lastUpdate: now.toISOString()
+            };
+            
+            renderDailyStats();
+            renderLanguageStats();
+        }
+
+        // Funcție pentru afișarea statisticilor
+        function renderDailyStats() {
+            // Organizații
+            const orgsList = document.getElementById('orgs-today-list');
+            const orgsCount = document.getElementById('orgs-today-count');
+            
+            const topOrgs = Object.entries(dailyStats.orgs)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5);
+            
+            orgsCount.textContent = topOrgs.reduce((sum, [_, count]) => sum + count, 0);
+            
+            if (topOrgs.length > 0) {
+                orgsList.innerHTML = topOrgs.map(([name, count]) => `
+                    <div class="stat-list-item">
+                        <span class="item-name" title="${name}">${name}</span>
+                        <span class="item-count">${count}</span>
+                    </div>
+                `).join('');
+            } else {
+                orgsList.innerHTML = '<div style="color: var(--text-muted); text-align: center;">Nicio organizație</div>';
+            }
+            
+            // Persoane
+            const personsList = document.getElementById('persons-today-list');
+            const personsCount = document.getElementById('persons-today-count');
+            
+            const topPersons = Object.entries(dailyStats.persons)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5);
+            
+            personsCount.textContent = topPersons.reduce((sum, [_, count]) => sum + count, 0);
+            
+            if (topPersons.length > 0) {
+                personsList.innerHTML = topPersons.map(([name, count]) => `
+                    <div class="stat-list-item">
+                        <span class="item-name" title="${name}">${name}</span>
+                        <span class="item-count">${count}</span>
+                    </div>
+                `).join('');
+            } else {
+                personsList.innerHTML = '<div style="color: var(--text-muted); text-align: center;">Nicio persoană</div>';
+            }
+            
+            // Teme fierbinți
+            const topicsList = document.getElementById('topics-today-list');
+            const topicsCount = document.getElementById('topics-today-count');
+            
+            const topTopics = Object.entries(dailyStats.topics)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5);
+            
+            topicsCount.textContent = topTopics.length;
+            
+            if (topTopics.length > 0) {
+                topicsList.innerHTML = topTopics.map(([word, count]) => `
+                    <div class="stat-list-item">
+                        <span class="item-name">#${word}</span>
+                        <span class="item-count">${count}</span>
+                        ${count > 3 ? '<span class="trending-up">▲</span>' : ''}
+                    </div>
+                `).join('');
+            } else {
+                topicsList.innerHTML = '<div style="color: var(--text-muted); text-align: center;">Nu sunt teme</div>';
+            }
+            
+            // Canale citate
+            const channelsList = document.getElementById('channels-today-list');
+            const channelsCount = document.getElementById('channels-today-count');
+            
+            const topChannels = Object.entries(dailyStats.channels)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5);
+            
+            channelsCount.textContent = topChannels.reduce((sum, [_, count]) => sum + count, 0);
+            
+            if (topChannels.length > 0) {
+                channelsList.innerHTML = topChannels.map(([channel, count]) => `
+                    <div class="stat-list-item">
+                        <span class="item-name">${channel}</span>
+                        <span class="item-count">${count}</span>
+                    </div>
+                `).join('');
+            } else {
+                channelsList.innerHTML = '<div style="color: var(--text-muted); text-align: center;">Nu sunt canale</div>';
+            }
+        }
+
+        // Funcție pentru afișarea statisticilor de limbă
+        function renderLanguageStats() {
+            const ruCount = document.getElementById('posts-ru-count');
+            const roCount = document.getElementById('posts-ro-count');
+            const otherCount = document.getElementById('posts-other-count');
+            
+            const ruProgress = document.getElementById('posts-ru-progress');
+            const roProgress = document.getElementById('posts-ro-progress');
+            const otherProgress = document.getElementById('posts-other-progress');
+            
+            ruCount.textContent = languageStats.ru;
+            roCount.textContent = languageStats.ro;
+            otherCount.textContent = languageStats.other;
+            
+            if (languageStats.total > 0) {
+                ruProgress.style.width = `${(languageStats.ru / languageStats.total) * 100}%`;
+                roProgress.style.width = `${(languageStats.ro / languageStats.total) * 100}%`;
+                otherProgress.style.width = `${(languageStats.other / languageStats.total) * 100}%`;
+            }
+        }
+
+        // Funcție pentru a afișa detalii despre entități
+        function showEntityDetails(type) {
+            if (type === 'ORG' || type === 'PER') {
+                setEntityTab(type);
+                // Scroll la secțiunea de entități
+                document.querySelector('.entity-box').scrollIntoView({ 
+                    behavior: 'smooth', 
+                    block: 'center' 
+                });
+            }
+        }
+
         // ── Reset ────────────────────────────────────────────────────────────
         function performReset() {
             resetLocalUI();
@@ -1633,8 +2406,10 @@
         function updateUI(state) {
             if (!state) return;
             
+            // Salvează starea primită de la server
             Object.assign(lastState, state);
 
+            // Actualizează elementele UI care nu sunt butoane
             document.getElementById('channel-count').innerText = lastState.channels?.length || 0;
             document.getElementById('status-dot').className =
                 `status-dot ${lastState.running && !lastState.paused ? 'active' : ''}`;
@@ -1647,17 +2422,18 @@
 
             updateChannelsList();
 
-            ['repost', 'similar', 'stylography'].forEach(m => {
-                const el = document.getElementById('mode-' + m);
-                if (el) {
-                    el.className = `mode-item ${m === lastState.similarity_mode ? 'active' : ''}`;
-                }
-            });
+            // 🔴 NU MAI ACTUALIZĂM BUTOANELE AUTOMAT!
+            // Butoanele de regim (direct, hibrid, tranzitiv) rămân în starea setată de utilizator
+            // Butoanele de analiză (repost, similar, stylography) rămân în starea setată de utilizator
 
             if (state.global_entities) {
                 entitiesData = state.global_entities;
                 updateEntitiesList();
+                updateDailyStats();
             }
+            
+            // Actualizează top canale
+            updateTopChannels();
         }
 
         function updateChannelsList() {
@@ -1751,18 +2527,6 @@
             updateEntitiesList();
         }
 
-        // ── Mode & channel helpers ───────────────────────────────────────────
-        function setMode(m) {
-            lastState.similarity_mode = m;
-            ['repost', 'similar', 'stylography'].forEach(mode => {
-                const el = document.getElementById('mode-' + mode);
-                if (el) {
-                    el.className = `mode-item ${mode === m ? 'active' : ''}`;
-                }
-            });
-            sendCommand('set_mode', { mode: m });
-        }
-
         function addChannel() {
             const input = document.getElementById('channel-input');
             if (input.value) { 
@@ -1781,16 +2545,36 @@
 
         // ── Utilities ────────────────────────────────────────────────────────
         function showNotify() {
+            // Anulează timer-ul anterior dacă există
+            if (notificationTimer) {
+                clearTimeout(notificationTimer);
+            }
+            
             const n = document.getElementById('match-notification');
             n.style.display = 'block';
-            setTimeout(() => n.style.display = 'none', 2000);
+            
+            // Setează un nou timer pentru a ascunde notificarea
+            notificationTimer = setTimeout(() => {
+                n.style.display = 'none';
+                notificationTimer = null;
+            }, 2000);
         }
 
         function showNotification(message) {
+            // Anulează timer-ul anterior dacă există
+            if (notificationTimer) {
+                clearTimeout(notificationTimer);
+            }
+            
             const n = document.getElementById('match-notification');
             n.textContent = message;
             n.style.display = 'block';
-            setTimeout(() => n.style.display = 'none', 3000);
+            
+            // Setează un nou timer pentru a ascunde notificarea
+            notificationTimer = setTimeout(() => {
+                n.style.display = 'none';
+                notificationTimer = null;
+            }, 3000);
         }
 
         function downloadJSON(data, filename) {
@@ -1824,10 +2608,20 @@
             event.target.value = '';
         }
 
+        // Rulează actualizarea periodică (la fiecare 5 minute)
+        setInterval(updateDailyStats, 5 * 60 * 1000);
+
         // Initialize on page load
         window.onload = () => { 
             initNetwork(); 
             connect(); 
+            
+            // Setează starea inițială a butoanelor
+            setRegime('direct');
+            setMode('similar');
+            
+            // Actualizează statisticile după 2 secunde
+            setTimeout(updateDailyStats, 2000);
             
             // Click outside to close project menu
             document.addEventListener('click', function(event) {

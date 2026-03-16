@@ -85,17 +85,17 @@ async def backup_now():
 
 
 # ─────────────────────────────────────────────
-# Endpointuri pentru gestionarea proiectelor
+# Endpointuri pentru gestionarea proiectelor (.tgm)
 # ─────────────────────────────────────────────
 PROJECTS_DIR = "projects"
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 
 @app.get("/api/project/list")
 async def list_projects():
-    """Listează toate proiectele salvate"""
+    """Listează toate proiectele salvate (.tgm)"""
     try:
         projects = []
-        for filepath in glob.glob(f"{PROJECTS_DIR}/*.json"):
+        for filepath in glob.glob(f"{PROJECTS_DIR}/*.tgm"):
             filename = os.path.basename(filepath)
             stat = os.stat(filepath)
             
@@ -125,23 +125,85 @@ async def list_projects():
 
 @app.post("/api/project/save")
 async def save_project(request: Request):
-    """Salvează un proiect"""
+    """Salvează un proiect COMPLET în format .tgm (JSON)"""
     try:
         data = await request.json()
         project_name = data.get('name', 'unnamed')
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
         # Elimină caracterele speciale din nume
         safe_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).strip()
         safe_name = safe_name.replace(' ', '_')
-        filename = f"{PROJECTS_DIR}/{safe_name}_{timestamp}.json"
+        filename = f"{PROJECTS_DIR}/{safe_name}_{timestamp}.tgm"
         
-        # Adaugă timestamp la date
-        data['saved_at'] = datetime.now().isoformat()
+        # Pregătește backup COMPLET (absolut tot)
+        project_data = {
+            "version": "2.0",
+            "name": project_name,
+            "saved_at": datetime.now().isoformat(),
+            
+            # Configurații
+            "channels": list(channels_set),
+            "target_channel": target_channel,
+            "keywords": keywords_list,
+            "similarity_mode": similarity_mode,
+            "analysis_mode": analysis_mode,
+            "running": running,
+            "paused": paused,
+            
+            # Date rețea
+            "nodes": nodes_data,
+            "edges": {f"{k[0]}|{k[1]}": v for k, v in edges_data.items()},
+            "posts_history": posts_history,
+            
+            # Cache-uri text
+            "ch_msgs_cache": ch_msgs_cache,
+            "ch_msgs_set": {k: list(v) for k, v in ch_msgs_set.items()},
+            
+            # Cache-uri analiză
+            "ch_style_cache": {},
+            "ch_lang_cache": ch_lang_cache,
+            
+            # Embedding-uri
+            "ch_embs_cache": {},
+            
+            # Cache NLP
+            "nlp_msg_cache": {str(k): v for k, v in nlp_msg_cache.items()},
+            
+            # Entități
+            "global_entities": global_entities,
+            
+            # Stare sistem
+            "dirty_channels": list(dirty_channels),
+            
+            # Statistici
+            "stats": {
+                "total_channels": len(channels_set),
+                "total_edges": len(edges_data),
+                "total_messages": sum(len(v) for v in ch_msgs_cache.values()),
+            }
+        }
         
+        # Procesează stilometria (numpy arrays -> liste)
+        for k, v in ch_style_cache.items():
+            if isinstance(v, np.ndarray):
+                project_data["ch_style_cache"][k] = v.tolist()
+            else:
+                project_data["ch_style_cache"][k] = v
+        
+        # Procesează embedding-urile (numpy arrays -> liste)
+        for ch, emb_data in ch_embs_cache.items():
+            if emb_data and "matrix" in emb_data and emb_data["matrix"] is not None:
+                project_data["ch_embs_cache"][ch] = {
+                    "orig_texts": emb_data["orig_texts"],
+                    "matrix": emb_data["matrix"].tolist()
+                }
+        
+        # Salvează în format JSON (cu extensia .tgm)
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(project_data, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"✅ Proiect salvat: {filename}")
+        logger.info(f"✅ Proiect .tgm salvat: {filename}")
         return {"status": "success", "filename": filename}
     except Exception as e:
         logger.error(f"Error saving project: {e}")
@@ -150,7 +212,7 @@ async def save_project(request: Request):
 
 @app.post("/api/project/load")
 async def load_project(request: Request):
-    """Încarcă un proiect"""
+    """Încarcă un proiect din format .tgm"""
     try:
         data = await request.json()
         filename = data.get('filename')
@@ -1230,27 +1292,48 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
     return edge_score, best_match
 
 # ─────────────────────────────────────────────
-# Connection Manager
+# Connection Manager - VERSIUNE ÎMBUNĂTĂȚITĂ
 # ─────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self):
         self.active_connections = []
+        self.ping_interval = 20  # secunde
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self.active_connections.append(ws)
+        # Pornește task-ul de ping
+        asyncio.create_task(self.keep_alive(ws))
         await self.send_state()
+
+    async def keep_alive(self, ws: WebSocket):
+        """Trimite ping periodic pentru a menține conexiunea"""
+        try:
+            while ws in self.active_connections:
+                await asyncio.sleep(self.ping_interval)
+                try:
+                    await ws.send_text(json.dumps({"type": "ping"}))
+                except:
+                    break
+        except:
+            pass
 
     def disconnect(self, ws: WebSocket):
         if ws in self.active_connections:
             self.active_connections.remove(ws)
 
     async def broadcast(self, msg: str):
-        for c in list(self.active_connections):
+        disconnected = []
+        for c in self.active_connections:
             try:
                 await c.send_text(msg)
             except Exception:
-                pass
+                disconnected.append(c)
+        
+        # Elimină conexiunile moarte
+        for c in disconnected:
+            if c in self.active_connections:
+                self.active_connections.remove(c)
 
     async def send_state(self):
         state = {
@@ -1278,7 +1361,7 @@ async def startup_event():
     start_nlp_loading(loop)
 
 # ─────────────────────────────────────────────
-# WebSocket endpoint
+# WebSocket endpoint - VERSIUNE ÎMBUNĂTĂȚITĂ
 # ─────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -1288,126 +1371,193 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await manager.connect(websocket)
     try:
+        # Setează timeout mai mare pentru ping
+        await websocket.receive_text()
+        
         while True:
-            data   = await websocket.receive_text()
-            cmd    = json.loads(data)
-            action = cmd.get("action")
+            try:
+                # Setează timeout pentru fiecare mesaj
+                data = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=30.0  # 30 secunde timeout
+                )
+                
+                cmd = json.loads(data)
+                action = cmd.get("action")
 
-            if action == "add_channel":
-                ch = cmd.get("channel", "").strip()
-                if ch:
-                    ch = "@" + ch.lstrip("@")
-                    channels_set.add(ch)
-                    if ch not in nodes_data:
-                        nodes_data[ch] = {"id": ch, "label": ch, "subscribers": 0}
+                if action == "add_channel":
+                    ch = cmd.get("channel", "").strip()
+                    if ch:
+                        ch = "@" + ch.lstrip("@")
+                        channels_set.add(ch)
+                        if ch not in nodes_data:
+                            nodes_data[ch] = {"id": ch, "label": ch, "subscribers": 0}
+                        await manager.send_state()
+
+                elif action == "remove_channel":
+                    ch = cmd.get("channel", "").strip()
+                    channels_set.discard(ch)
+                    dirty_channels.discard(ch)
+                    if ch == target_channel:
+                        target_channel = None
+                    nodes_data.pop(ch, None)
+                    ch_msgs_cache.pop(ch, None)
+                    ch_msgs_set.pop(ch, None)
+                    ch_embs_cache.pop(ch, None)
+                    ch_style_cache.pop(ch, None)
+                    ch_lang_cache.pop(ch, None)
+                    for k in [k for k in edges_data if ch in k]:
+                        edges_data.pop(k, None)
                     await manager.send_state()
 
-            elif action == "remove_channel":
-                ch = cmd.get("channel", "").strip()
-                channels_set.discard(ch)
-                dirty_channels.discard(ch)
-                if ch == target_channel:
+                elif action == "reset":
+                    channels_set.clear()
+                    nodes_data.clear()
+                    edges_data.clear()
+                    posts_history.clear()
+                    ch_msgs_cache.clear()
+                    ch_msgs_set.clear()
+                    ch_embs_cache.clear()
+                    ch_style_cache.clear()
+                    ch_lang_cache.clear()
+                    nlp_msg_cache.clear()
+                    dirty_channels.clear()
+                    global_entities["PER"].clear()
+                    global_entities["ORG"].clear()
                     target_channel = None
-                nodes_data.pop(ch, None)
-                ch_msgs_cache.pop(ch, None)
-                ch_msgs_set.pop(ch, None)
-                ch_embs_cache.pop(ch, None)
-                ch_style_cache.pop(ch, None)
-                ch_lang_cache.pop(ch, None)
-                for k in [k for k in edges_data if ch in k]:
-                    edges_data.pop(k, None)
-                await manager.send_state()
-
-            elif action == "reset":
-                channels_set.clear()
-                nodes_data.clear()
-                edges_data.clear()
-                posts_history.clear()
-                ch_msgs_cache.clear()
-                ch_msgs_set.clear()
-                ch_embs_cache.clear()
-                ch_style_cache.clear()
-                ch_lang_cache.clear()
-                nlp_msg_cache.clear()
-                dirty_channels.clear()
-                global_entities["PER"].clear()
-                global_entities["ORG"].clear()
-                target_channel = None
-                running = False
-                paused  = False
-                for t in background_tasks:
-                    if not t.done():
-                        t.cancel()
-                background_tasks.clear()
-                await manager.broadcast(json.dumps({"type": "clear_graph"}))
-                await manager.send_state()
-
-            elif action == "set_target":
-                ch = cmd.get("channel", "").strip()
-                target_channel = ch if (ch in channels_set and target_channel != ch) else None
-                await manager.send_state()
-
-            # MODIFICARE: Acțiune pentru setarea modului de similaritate
-            elif action == "set_mode":
-                new_mode = cmd.get("mode", "direct")
-                if new_mode in ["direct", "hibrid", "tranzitiv"]:
-                    similarity_mode = new_mode
-                    edges_data.clear()  # resetăm muchiile la schimbarea modului
-                    dirty_channels.update(channels_set)
-                    logger.info(f"✅ Mod similaritate schimbat: {new_mode}")
+                    running = False
+                    paused  = False
+                    for t in background_tasks:
+                        if not t.done():
+                            t.cancel()
+                    background_tasks.clear()
+                    await manager.broadcast(json.dumps({"type": "clear_graph"}))
                     await manager.send_state()
 
-            elif action == "start":
-                if not running:
-                    running = True
-                    paused  = False
-                    t1 = asyncio.create_task(background_scraper())
-                    t2 = asyncio.create_task(background_analyzer())
-                    background_tasks.extend([t1, t2])
-                await manager.send_state()
+                elif action == "set_target":
+                    ch = cmd.get("channel", "").strip()
+                    target_channel = ch if (ch in channels_set and target_channel != ch) else None
+                    await manager.send_state()
 
-            elif action == "stop":
-                running = False
-                await manager.send_state()
+                # MODIFICARE: Acțiune pentru setarea modului de similaritate
+                elif action == "set_mode":
+                    new_mode = cmd.get("mode", "direct")
+                    if new_mode in ["direct", "hibrid", "tranzitiv"]:
+                        similarity_mode = new_mode
+                        edges_data.clear()  # resetăm muchiile la schimbarea modului
+                        dirty_channels.update(channels_set)
+                        logger.info(f"✅ Mod similaritate schimbat: {new_mode}")
+                        await manager.send_state()
 
-            elif action == "pause":
-                paused = not paused
-                await manager.send_state()
+                elif action == "start":
+                    if not running:
+                        running = True
+                        paused  = False
+                        t1 = asyncio.create_task(background_scraper())
+                        t2 = asyncio.create_task(background_analyzer())
+                        background_tasks.extend([t1, t2])
+                    await manager.send_state()
 
-            elif action == "save_request":
-                payload = {
-                    "channels": list(channels_set),
-                    "edges": [
-                        {"from": k[0], "to": k[1], "strength": v}
-                        for k, v in edges_data.items()
-                    ],
-                    "entities": global_entities,
-                    "posts_history": posts_history[-50:],
-                }
-                await manager.broadcast(json.dumps({"type": "save_file", "data": payload}))
+                elif action == "stop":
+                    running = False
+                    await manager.send_state()
 
-            # ── Acțiuni pentru backup complet (METODA 4) ────────────
-            elif action == "full_backup":
-                try:
-                    filename = full_backup()
+                elif action == "pause":
+                    paused = not paused
+                    await manager.send_state()
+
+                elif action == "save_request":
+                    payload = {
+                        "channels": list(channels_set),
+                        "edges": [
+                            {"from": k[0], "to": k[1], "strength": v}
+                            for k, v in edges_data.items()
+                        ],
+                        "entities": global_entities,
+                        "posts_history": posts_history[-50:],
+                    }
+                    await manager.broadcast(json.dumps({"type": "save_file", "data": payload}))
+
+                # ── Acțiuni pentru backup complet (METODA 4) ────────────
+                elif action == "full_backup":
+                    try:
+                        filename = full_backup()
+                        await websocket.send_text(json.dumps({
+                            "type": "backup_complete",
+                            "success": True,
+                            "filename": filename,
+                            "message": f"Backup complet salvat: {filename}"
+                        }))
+                    except Exception as e:
+                        await websocket.send_text(json.dumps({
+                            "type": "backup_complete",
+                            "success": False,
+                            "message": f"Eroare la backup: {str(e)}"
+                        }))
+
+                elif action == "restore_backup":
+                    filename = cmd.get("filename")
+                    if filename and os.path.exists(filename):
+                        success = restore_full_backup(filename)
+                        if success:
+                            await manager.send_state()
+                            G = build_graph()
+                            graph_data = await send_graph_update(websocket, G)
+                            await websocket.send_text(json.dumps({
+                                "type": "graph_update",
+                                "nodes": graph_data["nodes"],
+                                "edges": graph_data["edges"]
+                            }))
+                            await websocket.send_text(json.dumps({
+                                "type": "restore_complete",
+                                "success": True,
+                                "message": f"Backup restaurat: {filename}"
+                            }))
+                        else:
+                            await websocket.send_text(json.dumps({
+                                "type": "restore_complete",
+                                "success": False,
+                                "message": "Eroare la restaurarea backup-ului"
+                            }))
+                    else:
+                        await websocket.send_text(json.dumps({
+                            "type": "restore_complete",
+                            "success": False,
+                            "message": "Fișierul nu există"
+                        }))
+
+                elif action == "list_backups":
+                    backups = []
+                    if os.path.exists("backups"):
+                        for f in os.listdir("backups"):
+                            if f.endswith('.pkl') or f.endswith('.json'):
+                                filepath = os.path.join("backups", f)
+                                stat = os.stat(filepath)
+                                backups.append({
+                                    "filename": f,
+                                    "size": stat.st_size,
+                                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+                                })
                     await websocket.send_text(json.dumps({
-                        "type": "backup_complete",
-                        "success": True,
-                        "filename": filename,
-                        "message": f"Backup complet salvat: {filename}"
-                    }))
-                except Exception as e:
-                    await websocket.send_text(json.dumps({
-                        "type": "backup_complete",
-                        "success": False,
-                        "message": f"Eroare la backup: {str(e)}"
+                        "type": "backups_list",
+                        "backups": sorted(backups, key=lambda x: x["modified"], reverse=True)
                     }))
 
-            elif action == "restore_backup":
-                filename = cmd.get("filename")
-                if filename and os.path.exists(filename):
-                    success = restore_full_backup(filename)
-                    if success:
+                # ── Acțiuni existente pentru salvare/încărcare proiect ────────────
+                elif action == "save_project":
+                    project_state = save_project_state()
+                    project_hash = hash_project_state(project_state)
+                    response = {
+                        "type": "project_saved",
+                        "data": project_state,
+                        "hash": project_hash,
+                        "filename": f"telegram_monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tgm"
+                    }
+                    await websocket.send_text(json.dumps(response))
+
+                elif action == "load_project":
+                    project_data = cmd.get("data")
+                    if project_data and load_project_state(project_data):
                         await manager.send_state()
                         G = build_graph()
                         graph_data = await send_graph_update(websocket, G)
@@ -1417,109 +1567,69 @@ async def websocket_endpoint(websocket: WebSocket):
                             "edges": graph_data["edges"]
                         }))
                         await websocket.send_text(json.dumps({
-                            "type": "restore_complete",
+                            "type": "project_loaded",
                             "success": True,
-                            "message": f"Backup restaurat: {filename}"
+                            "message": f"Proiect încărcat cu {len(channels_set)} canale"
                         }))
                     else:
                         await websocket.send_text(json.dumps({
-                            "type": "restore_complete",
+                            "type": "project_loaded",
                             "success": False,
-                            "message": "Eroare la restaurarea backup-ului"
+                            "message": "Eroare la încărcarea proiectului"
                         }))
-                else:
+
+                elif action == "export_project":
+                    project_state = save_project_state()
                     await websocket.send_text(json.dumps({
-                        "type": "restore_complete",
-                        "success": False,
-                        "message": "Fișierul nu există"
+                        "type": "project_export",
+                        "data": project_state,
+                        "filename": f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tgm"
                     }))
 
-            elif action == "list_backups":
-                backups = []
-                if os.path.exists("backups"):
-                    for f in os.listdir("backups"):
-                        if f.endswith('.pkl') or f.endswith('.json'):
-                            filepath = os.path.join("backups", f)
-                            stat = os.stat(filepath)
-                            backups.append({
-                                "filename": f,
-                                "size": stat.st_size,
-                                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
-                            })
-                await websocket.send_text(json.dumps({
-                    "type": "backups_list",
-                    "backups": sorted(backups, key=lambda x: x["modified"], reverse=True)
-                }))
+                elif action == "import_project":
+                    project_data = cmd.get("data")
+                    if project_data and load_project_state(project_data):
+                        await manager.send_state()
+                        G = build_graph()
+                        graph_data = await send_graph_update(websocket, G)
+                        await websocket.send_text(json.dumps({
+                            "type": "graph_update",
+                            "nodes": graph_data["nodes"],
+                            "edges": graph_data["edges"]
+                        }))
+                        await websocket.send_text(json.dumps({
+                            "type": "project_imported",
+                            "success": True
+                        }))
+                    else:
+                        await websocket.send_text(json.dumps({
+                            "type": "project_imported",
+                            "success": False
+                        }))
 
-            # ── Acțiuni existente pentru salvare/încărcare proiect ────────────
-            elif action == "save_project":
-                project_state = save_project_state()
-                project_hash = hash_project_state(project_state)
-                response = {
-                    "type": "project_saved",
-                    "data": project_state,
-                    "hash": project_hash,
-                    "filename": f"telegram_monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tgm"
-                }
-                await websocket.send_text(json.dumps(response))
-
-            elif action == "load_project":
-                project_data = cmd.get("data")
-                if project_data and load_project_state(project_data):
-                    await manager.send_state()
-                    G = build_graph()
-                    graph_data = await send_graph_update(websocket, G)
-                    await websocket.send_text(json.dumps({
-                        "type": "graph_update",
-                        "nodes": graph_data["nodes"],
-                        "edges": graph_data["edges"]
-                    }))
-                    await websocket.send_text(json.dumps({
-                        "type": "project_loaded",
-                        "success": True,
-                        "message": f"Proiect încărcat cu {len(channels_set)} canale"
-                    }))
-                else:
-                    await websocket.send_text(json.dumps({
-                        "type": "project_loaded",
-                        "success": False,
-                        "message": "Eroare la încărcarea proiectului"
-                    }))
-
-            elif action == "export_project":
-                project_state = save_project_state()
-                await websocket.send_text(json.dumps({
-                    "type": "project_export",
-                    "data": project_state,
-                    "filename": f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tgm"
-                }))
-
-            elif action == "import_project":
-                project_data = cmd.get("data")
-                if project_data and load_project_state(project_data):
-                    await manager.send_state()
-                    G = build_graph()
-                    graph_data = await send_graph_update(websocket, G)
-                    await websocket.send_text(json.dumps({
-                        "type": "graph_update",
-                        "nodes": graph_data["nodes"],
-                        "edges": graph_data["edges"]
-                    }))
-                    await websocket.send_text(json.dumps({
-                        "type": "project_imported",
-                        "success": True
-                    }))
-                else:
-                    await websocket.send_text(json.dumps({
-                        "type": "project_imported",
-                        "success": False
-                    }))
+            except asyncio.TimeoutError:
+                # Trimite ping pentru a menține conexiunea vie
+                try:
+                    await websocket.send_text(json.dumps({"type": "ping"}))
+                    continue
+                except:
+                    logger.warning("WebSocket ping failed, closing connection")
+                    break
+                    
+            except Exception as e:
+                logger.error(f"WebSocket error: {e}")
+                break
 
     except WebSocketDisconnect:
+        logger.info("WebSocket disconnected normally")
+    except Exception as e:
+        logger.error(f"WebSocket unexpected error: {e}")
+    finally:
         manager.disconnect(websocket)
+        logger.info("WebSocket connection closed")
 
 # ─────────────────────────────────────────────
-# Background scraper
+# Background scraper - CU TIMEOUT MĂRIT
 # ─────────────────────────────────────────────
 async def background_scraper():
     global running, paused, channels_set, nodes_data
@@ -1536,7 +1646,7 @@ async def background_scraper():
                 await manager.broadcast(json.dumps({"type": "status", "msg": f"Scanez {ch}..."}))
                 data = await asyncio.wait_for(
                     asyncio.to_thread(scrape_channel, ch),
-                    timeout=12.0
+                    timeout=20.0  # mărit de la 12 la 20 secunde
                 )
             except asyncio.TimeoutError:
                 logger.warning(f"[Scraper] Timeout pentru {ch}, sarit.")
