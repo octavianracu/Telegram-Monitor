@@ -1,284 +1,219 @@
-Telegram Monitor este un instrument avansat de analiză și vizualizare a rețelelor de canale Telegram, care detectează automat relații de similaritate, repostări și pattern-uri stilometrice între canale. Sistemul rulează în timp real și oferă o interfață web interactivă pentru explorarea rețelei sociale descoperite.
+Telegram Monitor - Analiză Rețele de Canale Telegram
+https://img.shields.io/badge/version-2.0-blue
+https://img.shields.io/badge/python-3.8%252B-green
+https://img.shields.io/badge/FastAPI-0.68%252B-teal
+https://img.shields.io/badge/license-MIT-orange
 
-✨ Caracteristici Principale
-🎯 Analiză Multi-dimensională
-Repostări - Detectează canale care repostează același conținut (prag: 0.88)
+📋 Descriere
+Telegram Monitor este o aplicație web pentru monitorizarea și analiza rețelelor de canale Telegram. Sistemul scanează canale specificate, extrage postări și construiește un graf al relațiilor dintre canale bazat pe similaritatea conținutului.
 
-Similaritate semantică - Identifică canale cu conținut ideologic similar folosind embeddings multilingve (prag: 0.72)
+✨ Caracteristici principale
+🎯 Analiză în trei moduri
+Mod	Descriere	Utilizare
+🔍 Direct	Compară direct doar perechile cu conținut nou	Acuratețe maximă
+🔄 Hibrid	70% comparații directe + 30% inferențe din graf	Balanță viteză/acuratețe
+🌐 Tranzitiv	Prioritizează descoperirea de conexiuni prin lanțuri	Descoperire rapidă de comunități
+📊 Analiză avansată
+Similaritate semantică - folosește modele transformer (paraphrase-multilingual-mpnet-base-v2)
 
-Stilometrie avansată - Recunoaște același autor după 18 dimensiuni stilistice de scriere (prag: 0.72)
+Stilometrie - analiză pe 18 dimensiuni stilistice
 
-🧠 Procesare NLP de Ultimă Generație
-Modele încărcate asincron în background thread
+Detecție repostări - identifică conținut duplicat
 
-Cache inteligent pentru embeddings și analize NLP
+Analiză sentiment - clasificare sentiment pe mesaje
 
-Procesare incrementală - doar mesajele noi sunt encodate
+NER - extragere entități (persoane, organizații)
 
-Suport multilingv complet (română, rusă, engleză)
-
-NER (Named Entity Recognition) pentru persoane și organizații
-
-Analiză de sentiment per mesaj
-
-📊 Vizualizare Interactivă în Timp Real
-Grafice de rețea dinamice cu librăria vis.js
+🕸️ Vizualizare rețea
+Graf interactiv cu canale și conexiuni
 
 Comunități detectate automat (algoritm Louvain)
 
-6 metrici de centralitate:
+Metrici de rețea (grad, betweenness, PageRank)
 
-Grad (degree)
+Filtrare după canal țintă
 
-Betweenness (punte)
+💾 Persistență date
+Backup automat la fiecare oră
 
-Closeness (proximitate)
+Backup manual prin API
 
-Eigenvector (influență)
+Salvare/încărcare proiecte
 
-PageRank (difuzie)
-
-Sistem de culori pentru comunități
-
-Tooltip-uri cu informații detaliate
-
-Panou de informații la click pe nod
-
-⚡ Performanță Optimizată pentru Scenarii Reale
-Scraping paralel cu semafor (max 5 canale simultan)
-
-Procesare în batch-uri de 20 canale pentru evitarea supraîncărcării
-
-Dirty tracking - reanalizează doar canalele modificate
-
-Decay logaritmic al relațiilor în timp (relațiile puternice persistă)
-
-Limitare la 300 perechi analizate per ciclu
-
-Timeout de 12 secunde per canal pentru scraping
-
-🎨 Interfață Modernă
-Design Cyberpunk cu temă întunecată
-
-Gradient și efecte de blur
-
-Animații fluide pentru notificări
-
-Butoane de navigare în graf:
-
-Zoom In/Out
-
-Fit to Screen
-
-Toggle Physics (oprește/pornește animația)
-
-Export Graph în JSON
-
-Reset View
-
-Filtrare canale în timp real
-
-Upload fișiere .txt cu liste de canale
+Export în format JSON
 
 🏗️ Arhitectură
 text
-telegram-channel-analyzer/
-├── main.py                 # Aplicația principală FastAPI
-├── static/
-│   └── index.html         # Interfață web (SPA)
-├── requirements.txt       # Dependințe Python
-├── .gitignore             # Fișiere ignorate în Git
-└── README.md              # Documentație
-Componente Tehnice
-Componentă	Tehnologie	Rol
-Backend	FastAPI + WebSocket	Server și comunicare real-time
-Frontend	vis.js + vanilla JS	Vizualizare graf interactivă
-Embeddings	sentence-transformers	Similaritate semantică
-NLP	Hugging Face Transformers	NER și sentiment
-Analiză rețea	NetworkX	Algoritmi de comunități și centralitate
-Scraping	requests + BeautifulSoup4	Colectare date Telegram
-Matematică	NumPy + scikit-learn	Calcul similarități
-📦 Instalare
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Frontend      │────▶│   Backend       │────▶│   Baze de date  │
+│   (HTML/JS)     │◀────│   (FastAPI)     │◀────│   (Memorie)     │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+        │                       │                        │
+        ▼                       ▼                        ▼
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Vizualizare   │     │   WebSocket     │     │   Embedding     │
+│   vis.js        │     │   în timp real  │     │   Cache         │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+🚀 Instalare
 Cerințe sistem
 Python 3.8 sau mai nou
 
-4GB RAM minim (recomandat 8GB)
+8GB RAM recomandat (pentru modele NLP)
 
 Conexiune internet pentru descărcarea modelelor
 
 Pași instalare
 bash
-# Clonează repository-ul
-git clone https://github.com/username/telegram-channel-analyzer.git
-cd telegram-channel-analyzer
+# 1. Clonează repository
+git clone https://github.com/utilizator/telegram-monitor.git
+cd telegram-monitor
 
-# Creează și activează virtual environment
+# 2. Creează și activează virtual environment
 python -m venv venv
+source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate     # Windows
 
-# Linux/Mac
-source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
-
-# Instalează dependințele
+# 3. Instalează dependențe
 pip install -r requirements.txt
 
-# Pornește serverul
+# 4. Pornește aplicația
 python main.py
-Serverul va rula la http://localhost:8000. Modelele NLP se vor descărca automat la prima pornire (1-2GB, poate dura câteva minute).
-
+📦 Dependențe principale
+txt
+fastapi==0.68.0
+uvicorn==0.15.0
+websockets==10.0
+requests==2.26.0
+beautifulsoup4==4.10.0
+numpy==1.21.0
+networkx==2.6.3
+sentence-transformers==2.1.0
+scikit-learn==0.24.2
+transformers==4.11.3
+torch==1.9.0
 🎮 Utilizare
-Interfață Web
-Adaugă canale - Introdu nume de canale Telegram (cu sau fără @)
+1. Adăugare canale
+text
+@canal1
+@canal2
+@canal3
+2. Selectare mod analiză
+Alege între:
 
-Selectează modul de analiză:
+DIRECT - pentru acuratețe maximă
 
-🔄 Repostări - pentru conținut identic
+HIBRID - pentru balanță optimă
 
-🎯 Tematici & Ideologie - pentru similaritate semantică
+TRANZITIV - pentru descoperire rapidă
 
-✍️ Stilografie - pentru același autor
+3. Monitorizare
+Sistemul scanează automat canalele la fiecare 10 secunde
 
-Pornește analiza - click START
+Conexiunile descoperite apar în graf și în fluxul de postări
 
-Explorează graful:
+Poți urmări metrici de rețea în timp real
 
-Click pe nod pentru detalii
-
-Dublu-click pentru focus
-
-Butoanele din dreapta sus pentru navigare
-
-Selectează metrica din dropdown
-
-Comenzi disponibile
-Buton	Acțiune
-START	Pornește analiza în timp real
-PAUZĂ	Suspendă analiza temporar
-STOP	Oprește analiza complet
-RESETARE	Șterge toate datele
-JSON	Exportă rețeaua în format JSON
-+ ADAUGĂ	Adaugă canal manual
-📁 .TXT	Încarcă listă de canale din fișier
-Navigare Graf
-Buton	Funcție
-➕	Apropie zoom
-➖	Depărtează zoom
-⬛	Potrivește în ecran
-⚙	Pornește/oprește fizica
-⬇	Exportă graful
-⟲	Resetează vederea
-📊 Dimensiuni Stilometrice
-Sistemul analizează 18 dimensiuni pentru detectarea autorului:
-
-Suprafață textuală (pondere 0.5-1.5)
-Lungime medie mesaj
-
-Densitate punctuație
-
-Densitate caractere speciale/emoji
-
-Lungime medie cuvânt
-
-Ticuri de scriere (pondere 2.0)
-Rată ellipsis (...)
-
-Rată exclamații (!!)
-
-Rată întrebări (?)
-
-Lexic și vocabular (pondere 1.0)
-Type-token ratio (TTR)
-
-Rată hapax legomena
-
-Bogăție vocabular
-
-Rată stopwords
-
-Structură (pondere 1.0-1.5)
-Lungime medie propoziție
-
-Proporție propoziții scurte/lungi
-
-Variație lungime mesaje
-
-Densitate link-uri
-
-⚙️ Configurare Avansată
-Parametrii pot fi ajustați în main.py:
+4. Salvare proiecte
+javascript
+// Backup manual
+// Din interfață, click pe "PROIECTE" → "Salvează"
+// Fișierele sunt salvate în directorul `projects/`
+📁 Structură proiect
+text
+telegram-monitor/
+├── main.py                 # Aplicația principală
+├── static/
+│   └── index.html          # Interfață web
+├── projects/               # Proiecte salvate
+├── backups/                # Backup-uri automate
+├── requirements.txt        # Dependențe
+└── README.md               # Documentație
+🔧 Configurare avansată
+Praguri similaritate
+În main.py poți ajusta pragurile:
 
 python
-# Praguri similaritate
 THRESHOLD = {
-    "repost":      0.88,  # Prag pentru repostări
-    "similar":     0.72,  # Prag pentru similaritate semantică
-    "stylography": 0.72,  # Prag pentru stilometrie
+    "repost":      0.88,    # Prag pentru identificare repostări
+    "similar":     0.72,    # Prag pentru similaritate semantică
+    "stylography": 0.72,    # Prag pentru similaritate stilometrică
 }
 
-# Performanță
-DECAY_BASE = 0.88        # Factor decay pentru relații
-BATCH_SIZE = 20          # Canale per batch la scraping
-MAX_PAIRS_PER_CYCLE = 300  # Perechi analizate per ciclu
-TIMEOUT = 12             # Timeout scraping per canal (secunde)
-🧪 Exemple de Utilizare
-Adăugare manuală canale
-bash
-# În interfață, introduceți:
-@stiri
-@news_ro
-@actualitate
-Încărcare fișier .txt
-txt
-stiri
-news_ro
-actualitate
-politic
-economie
-Export date
-json
-{
-  "channels": ["@stiri", "@news_ro"],
-  "edges": [
-    {"from": "@stiri", "to": "@news_ro", "strength": 0.92}
-  ],
-  "entities": {
-    "PER": {"Ion Popescu": {"count": 5, "sum": 3.2}},
-    "ORG": {"Guvern": {"count": 3, "sum": -1.5}}
-  }
+INFERENCE_THRESHOLD = {
+    "direct":   0.72,        # Prag mod direct
+    "hibrid":   0.65,        # Prag mod hibrid
+    "tranzitiv": 0.60,       # Prag mod tranzitiv
 }
+Endpointuri API
+Metodă	Endpoint	Descriere
+GET	/api/backup_now	Backup manual
+GET	/api/project/list	Listare proiecte
+POST	/api/project/save	Salvare proiect
+POST	/api/project/load	Încărcare proiect
+DELETE	/api/project/delete	Ștergere proiect
+WebSocket	/ws	Conexiune în timp real
+📊 Algoritmi de similaritate
+1. Similaritate semantică
+Embedding-uri generate cu SentenceTransformer
+
+Similaritate cosinus între vectori
+
+Bonus NLP pentru sentiment și entități comune
+
+2. Stilometrie
+18 dimensiuni analizate:
+
+Lungime caracter/mesaj
+
+Frecvență punctuație
+
+Tip-token ratio (TTR)
+
+Proporție cuvinte unice (hapax)
+
+Și altele...
+
+3. Inferență tranzitivă
+Lanțuri de lungime 2 (A-B-C)
+
+Lanțuri de lungime 3 (A-B-C-D)
+
+Propagare cu decay exponențial
+
 🤝 Contribuții
 Contribuțiile sunt binevenite! Te rugăm să:
 
-Fork the repository
+Fork repository
 
-Creează branch pentru feature (git checkout -b feature/amazing)
+Creează branch nou (git checkout -b feature/amazing-feature)
 
-Commit changes (git commit -m 'Add amazing feature')
+Commit modificări (git commit -m 'Add amazing feature')
 
-Push to branch (git push origin feature/amazing)
+Push branch (git push origin feature/amazing-feature)
 
 Deschide Pull Request
 
-Reguli de contribuție
-Păstrează stilul de cod existent
+📝 To-Do
+Autentificare utilizatori
 
-Adaugă comentarii pentru funcții noi
+Salvare în baze de date (PostgreSQL/MongoDB)
 
-Actualizează documentația
+Export în formate multiple (CSV, GEXF)
 
-Testează înainte de PR
+Analiză timeline (evoluție în timp)
 
-🐛 Bug Reporting
-Pentru bug-uri, te rugăm să deschizi un issue cu:
+Notificări în timp real
 
-Descrierea problemei
+Dockerizare aplicație
 
-Pași de reproducere
+📄 Licență
+Acest proiect este licențiat sub MIT License.
 
-Comportament așteptat vs. actual
+✉️ Contact
+Autor: Octavian Racu
 
-Log-uri de eroare (dacă există)
+Telegram: @racumd
 
-Versiuni software (Python, pachete)
+Canal monitorizare: @socialcomputing
+
+⚠️ Notă: Asigură-te că respecți termenii de utilizare Telegram când folosești acest instrument.
