@@ -1,194 +1,284 @@
-# Telegram Monitor - Analiză Rețele de Canale Telegram
+Telegram Monitor este un instrument avansat de analiză și vizualizare a rețelelor de canale Telegram, care detectează automat relații de similaritate, repostări și pattern-uri stilometrice între canale. Sistemul rulează în timp real și oferă o interfață web interactivă pentru explorarea rețelei sociale descoperite.
 
-## 📋 Descriere
+✨ Caracteristici Principale
+🎯 Analiză Multi-dimensională
+Repostări - Detectează canale care repostează același conținut (prag: 0.88)
 
-Telegram Monitor este o aplicație web pentru monitorizarea și analiza rețelelor de canale Telegram. Sistemul scanează canale specificate, extrage postări și construiește un graf al relațiilor dintre canale bazat pe similaritatea conținutului.
+Similaritate semantică - Identifică canale cu conținut ideologic similar folosind embeddings multilingve (prag: 0.72)
 
-## ✨ Caracteristici principale
+Stilometrie avansată - Recunoaște același autor după 18 dimensiuni stilistice de scriere (prag: 0.72)
 
-### 🎯 Analiză în trei moduri
+🧠 Procesare NLP de Ultimă Generație
+Modele încărcate asincron în background thread
 
-| Mod | Descriere | Utilizare |
-|-----|-----------|-----------|
-| Direct | Compară direct doar perechile cu conținut nou | Acuratețe maximă |
-| Hibrid | 70% comparații directe + 30% inferențe din graf | Balanță viteză/acuratețe |
-| Tranzitiv | Prioritizează descoperirea de conexiuni prin lanțuri | Descoperire rapidă de comunități |
+Cache inteligent pentru embeddings și analize NLP
 
-### 📊 Analiză avansată
+Procesare incrementală - doar mesajele noi sunt encodate
 
-- Similaritate semantică - folosește modele transformer (paraphrase-multilingual-mpnet-base-v2)
-- Stilometrie - analiză pe 18 dimensiuni stilistice
-- Detecție repostări - identifică conținut duplicat
-- Analiză sentiment - clasificare sentiment pe mesaje
-- NER - extragere entități (persoane, organizații)
+Suport multilingv complet (română, rusă, engleză)
 
-### 🕸️ Vizualizare rețea
+NER (Named Entity Recognition) pentru persoane și organizații
 
-- Graf interactiv cu canale și conexiuni
-- Comunități detectate automat (algoritm Louvain)
-- Metrici de rețea (grad, betweenness, PageRank)
-- Filtrare după canal țintă
+Analiză de sentiment per mesaj
 
-### 💾 Persistență date
+📊 Vizualizare Interactivă în Timp Real
+Grafice de rețea dinamice cu librăria vis.js
 
-- Backup automat la fiecare oră
-- Backup manual prin API
-- Salvare/încărcare proiecte
-- Export în format JSON
+Comunități detectate automat (algoritm Louvain)
 
-## 🚀 Instalare
+6 metrici de centralitate:
 
-### Cerințe sistem
+Grad (degree)
 
-- Python 3.8 sau mai nou
-- 8GB RAM recomandat (pentru modele NLP)
-- Conexiune internet pentru descărcarea modelelor
+Betweenness (punte)
 
-### Pași instalare
+Closeness (proximitate)
 
-```bash
-git clone https://github.com/utilizator/telegram-monitor.git
-cd telegram-monitor
-python -m venv venv
-source venv/bin/activate  # pentru Linux/Mac
-venv\Scripts\activate     # pentru Windows
-pip install -r requirements.txt
-python main.py
-📦 Dependențe principale
-txt
-fastapi==0.68.0
-uvicorn==0.15.0
-websockets==10.0
-requests==2.26.0
-beautifulsoup4==4.10.0
-numpy==1.21.0
-networkx==2.6.3
-sentence-transformers==2.1.0
-scikit-learn==0.24.2
-transformers==4.11.3
-torch==1.9.0
-🎮 Utilizare
-1. Adăugare canale
+Eigenvector (influență)
+
+PageRank (difuzie)
+
+Sistem de culori pentru comunități
+
+Tooltip-uri cu informații detaliate
+
+Panou de informații la click pe nod
+
+⚡ Performanță Optimizată pentru Scenarii Reale
+Scraping paralel cu semafor (max 5 canale simultan)
+
+Procesare în batch-uri de 20 canale pentru evitarea supraîncărcării
+
+Dirty tracking - reanalizează doar canalele modificate
+
+Decay logaritmic al relațiilor în timp (relațiile puternice persistă)
+
+Limitare la 300 perechi analizate per ciclu
+
+Timeout de 12 secunde per canal pentru scraping
+
+🎨 Interfață Modernă
+Design Cyberpunk cu temă întunecată
+
+Gradient și efecte de blur
+
+Animații fluide pentru notificări
+
+Butoane de navigare în graf:
+
+Zoom In/Out
+
+Fit to Screen
+
+Toggle Physics (oprește/pornește animația)
+
+Export Graph în JSON
+
+Reset View
+
+Filtrare canale în timp real
+
+Upload fișiere .txt cu liste de canale
+
+🏗️ Arhitectură
 text
-@canal1
-@canal2
-@canal3
-2. Selectare mod analiză
-Alege între:
-
-DIRECT - pentru acuratețe maximă
-
-HIBRID - pentru balanță optimă
-
-TRANZITIV - pentru descoperire rapidă
-
-3. Monitorizare
-Sistemul scanează automat canalele la fiecare 10 secunde
-
-Conexiunile descoperite apar în graf și în fluxul de postări
-
-Poți urmări metrici de rețea în timp real
-
-4. Salvare proiecte
-Din interfață, click pe "PROIECTE" → "Salvează"
-Fișierele sunt salvate în directorul projects/
-
-📁 Structură proiect
-text
-telegram-monitor/
-├── main.py
+telegram-channel-analyzer/
+├── main.py                 # Aplicația principală FastAPI
 ├── static/
-│   └── index.html
-├── projects/
-├── backups/
-├── requirements.txt
-└── README.md
-🔧 Configurare avansată
-Praguri similaritate
-În main.py poți ajusta pragurile:
+│   └── index.html         # Interfață web (SPA)
+├── requirements.txt       # Dependințe Python
+├── .gitignore             # Fișiere ignorate în Git
+└── README.md              # Documentație
+Componente Tehnice
+Componentă	Tehnologie	Rol
+Backend	FastAPI + WebSocket	Server și comunicare real-time
+Frontend	vis.js + vanilla JS	Vizualizare graf interactivă
+Embeddings	sentence-transformers	Similaritate semantică
+NLP	Hugging Face Transformers	NER și sentiment
+Analiză rețea	NetworkX	Algoritmi de comunități și centralitate
+Scraping	requests + BeautifulSoup4	Colectare date Telegram
+Matematică	NumPy + scikit-learn	Calcul similarități
+📦 Instalare
+Cerințe sistem
+Python 3.8 sau mai nou
+
+4GB RAM minim (recomandat 8GB)
+
+Conexiune internet pentru descărcarea modelelor
+
+Pași instalare
+bash
+# Clonează repository-ul
+git clone https://github.com/username/telegram-channel-analyzer.git
+cd telegram-channel-analyzer
+
+# Creează și activează virtual environment
+python -m venv venv
+
+# Linux/Mac
+source venv/bin/activate
+
+# Windows
+venv\Scripts\activate
+
+# Instalează dependințele
+pip install -r requirements.txt
+
+# Pornește serverul
+python main.py
+Serverul va rula la http://localhost:8000. Modelele NLP se vor descărca automat la prima pornire (1-2GB, poate dura câteva minute).
+
+🎮 Utilizare
+Interfață Web
+Adaugă canale - Introdu nume de canale Telegram (cu sau fără @)
+
+Selectează modul de analiză:
+
+🔄 Repostări - pentru conținut identic
+
+🎯 Tematici & Ideologie - pentru similaritate semantică
+
+✍️ Stilografie - pentru același autor
+
+Pornește analiza - click START
+
+Explorează graful:
+
+Click pe nod pentru detalii
+
+Dublu-click pentru focus
+
+Butoanele din dreapta sus pentru navigare
+
+Selectează metrica din dropdown
+
+Comenzi disponibile
+Buton	Acțiune
+START	Pornește analiza în timp real
+PAUZĂ	Suspendă analiza temporar
+STOP	Oprește analiza complet
+RESETARE	Șterge toate datele
+JSON	Exportă rețeaua în format JSON
++ ADAUGĂ	Adaugă canal manual
+📁 .TXT	Încarcă listă de canale din fișier
+Navigare Graf
+Buton	Funcție
+➕	Apropie zoom
+➖	Depărtează zoom
+⬛	Potrivește în ecran
+⚙	Pornește/oprește fizica
+⬇	Exportă graful
+⟲	Resetează vederea
+📊 Dimensiuni Stilometrice
+Sistemul analizează 18 dimensiuni pentru detectarea autorului:
+
+Suprafață textuală (pondere 0.5-1.5)
+Lungime medie mesaj
+
+Densitate punctuație
+
+Densitate caractere speciale/emoji
+
+Lungime medie cuvânt
+
+Ticuri de scriere (pondere 2.0)
+Rată ellipsis (...)
+
+Rată exclamații (!!)
+
+Rată întrebări (?)
+
+Lexic și vocabular (pondere 1.0)
+Type-token ratio (TTR)
+
+Rată hapax legomena
+
+Bogăție vocabular
+
+Rată stopwords
+
+Structură (pondere 1.0-1.5)
+Lungime medie propoziție
+
+Proporție propoziții scurte/lungi
+
+Variație lungime mesaje
+
+Densitate link-uri
+
+⚙️ Configurare Avansată
+Parametrii pot fi ajustați în main.py:
 
 python
+# Praguri similaritate
 THRESHOLD = {
-    "repost": 0.88,
-    "similar": 0.72,
-    "stylography": 0.72,
+    "repost":      0.88,  # Prag pentru repostări
+    "similar":     0.72,  # Prag pentru similaritate semantică
+    "stylography": 0.72,  # Prag pentru stilometrie
 }
 
-INFERENCE_THRESHOLD = {
-    "direct": 0.72,
-    "hibrid": 0.65,
-    "tranzitiv": 0.60,
+# Performanță
+DECAY_BASE = 0.88        # Factor decay pentru relații
+BATCH_SIZE = 20          # Canale per batch la scraping
+MAX_PAIRS_PER_CYCLE = 300  # Perechi analizate per ciclu
+TIMEOUT = 12             # Timeout scraping per canal (secunde)
+🧪 Exemple de Utilizare
+Adăugare manuală canale
+bash
+# În interfață, introduceți:
+@stiri
+@news_ro
+@actualitate
+Încărcare fișier .txt
+txt
+stiri
+news_ro
+actualitate
+politic
+economie
+Export date
+json
+{
+  "channels": ["@stiri", "@news_ro"],
+  "edges": [
+    {"from": "@stiri", "to": "@news_ro", "strength": 0.92}
+  ],
+  "entities": {
+    "PER": {"Ion Popescu": {"count": 5, "sum": 3.2}},
+    "ORG": {"Guvern": {"count": 3, "sum": -1.5}}
+  }
 }
-Endpointuri API
-Metodă	Endpoint	Descriere
-GET	/api/backup_now	Backup manual
-GET	/api/project/list	Listare proiecte
-POST	/api/project/save	Salvare proiect
-POST	/api/project/load	Încărcare proiect
-DELETE	/api/project/delete	Ștergere proiect
-WebSocket	/ws	Conexiune în timp real
-📊 Algoritmi de similaritate
-1. Similaritate semantică
-Embedding-uri generate cu SentenceTransformer
-
-Similaritate cosinus între vectori
-
-Bonus NLP pentru sentiment și entități comune
-
-2. Stilometrie
-18 dimensiuni analizate:
-
-Lungime caracter/mesaj
-
-Frecvență punctuație
-
-Tip-token ratio (TTR)
-
-Proporție cuvinte unice (hapax)
-
-Și altele...
-
-3. Inferență tranzitivă
-Lanțuri de lungime 2 (A-B-C)
-
-Lanțuri de lungime 3 (A-B-C-D)
-
-Propagare cu decay exponențial
-
 🤝 Contribuții
 Contribuțiile sunt binevenite! Te rugăm să:
 
-Fork repository
+Fork the repository
 
-Creează branch nou (git checkout -b feature/amazing-feature)
+Creează branch pentru feature (git checkout -b feature/amazing)
 
-Commit modificări (git commit -m "Add amazing feature")
+Commit changes (git commit -m 'Add amazing feature')
 
-Push branch (git push origin feature/amazing-feature)
+Push to branch (git push origin feature/amazing)
 
 Deschide Pull Request
 
-📝 To-Do
-Autentificare utilizatori
+Reguli de contribuție
+Păstrează stilul de cod existent
 
-Salvare în baze de date (PostgreSQL/MongoDB)
+Adaugă comentarii pentru funcții noi
 
-Export în formate multiple (CSV, GEXF)
+Actualizează documentația
 
-Analiză timeline (evoluție în timp)
+Testează înainte de PR
 
-Notificări în timp real
+🐛 Bug Reporting
+Pentru bug-uri, te rugăm să deschizi un issue cu:
 
-Dockerizare aplicație
+Descrierea problemei
 
-📄 Licență
-Acest proiect este licențiat sub MIT License.
+Pași de reproducere
 
-✉️ Contact
-Autor: Octavian Racu
+Comportament așteptat vs. actual
 
-Telegram: https://t.me/racumd
+Log-uri de eroare (dacă există)
 
-Canal monitorizare: https://t.me/socialcomputing
-
-Notă: Asigură-te că respecți termenii de utilizare Telegram când folosești acest instrument.
+Versiuni software (Python, pachete)

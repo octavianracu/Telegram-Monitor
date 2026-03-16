@@ -5,10 +5,15 @@ import os
 import logging
 from datetime import datetime
 import threading
+import pickle
+import base64
+import hashlib
+import glob
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import numpy as np
@@ -28,6 +33,166 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# ─────────────────────────────────────────────
+# Backup endpoint
+# ─────────────────────────────────────────────
+@app.get("/api/backup_now")
+async def backup_now():
+    """Salvează datele curente în folderul backups"""
+    try:
+        # Creează folderul dacă nu există
+        os.makedirs("backups", exist_ok=True)
+        
+        # Nume fișier cu timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"backups/backup_{timestamp}.json"
+        
+        # Colectează datele
+        backup_data = {
+            "timestamp": timestamp,
+            "channels": list(channels_set),
+            "target": target_channel,
+            "keywords": keywords_list,
+            "mode": similarity_mode,
+            "nodes": nodes_data,
+            "edges": {f"{k[0]}|{k[1]}": v for k, v in edges_data.items()},
+            "posts_history": posts_history[-100:],
+            "global_entities": global_entities,
+            "stats": {
+                "total_channels": len(channels_set),
+                "total_edges": len(edges_data)
+            }
+        }
+        
+        # Salvează în fișier
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(backup_data, f, ensure_ascii=False, indent=2)
+        
+        # Log în consolă
+        print(f"✅ Backup creat: {filename}")
+        
+        return {
+            "success": True, 
+            "message": f"Backup salvat: {filename}",
+            "filename": filename,
+            "stats": backup_data["stats"]
+        }
+        
+    except Exception as e:
+        print(f"❌ Eroare backup: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ─────────────────────────────────────────────
+# Endpointuri pentru gestionarea proiectelor
+# ─────────────────────────────────────────────
+PROJECTS_DIR = "projects"
+os.makedirs(PROJECTS_DIR, exist_ok=True)
+
+@app.get("/api/project/list")
+async def list_projects():
+    """Listează toate proiectele salvate"""
+    try:
+        projects = []
+        for filepath in glob.glob(f"{PROJECTS_DIR}/*.json"):
+            filename = os.path.basename(filepath)
+            stat = os.stat(filepath)
+            
+            # Încearcă să citești numele din fișier
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    project_name = data.get('name', filename)
+            except:
+                project_name = filename
+            
+            projects.append({
+                "filename": filename,
+                "name": project_name,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "size": stat.st_size
+            })
+        
+        # Sortează după data modificării (cele mai noi primele)
+        projects.sort(key=lambda x: x["modified"], reverse=True)
+        
+        return {"status": "success", "projects": projects}
+    except Exception as e:
+        logger.error(f"Error listing projects: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/project/save")
+async def save_project(request: Request):
+    """Salvează un proiect"""
+    try:
+        data = await request.json()
+        project_name = data.get('name', 'unnamed')
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Elimină caracterele speciale din nume
+        safe_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_name = safe_name.replace(' ', '_')
+        filename = f"{PROJECTS_DIR}/{safe_name}_{timestamp}.json"
+        
+        # Adaugă timestamp la date
+        data['saved_at'] = datetime.now().isoformat()
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"✅ Proiect salvat: {filename}")
+        return {"status": "success", "filename": filename}
+    except Exception as e:
+        logger.error(f"Error saving project: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/project/load")
+async def load_project(request: Request):
+    """Încarcă un proiect"""
+    try:
+        data = await request.json()
+        filename = data.get('filename')
+        
+        if not filename:
+            return {"status": "error", "message": "Filename required"}
+        
+        filepath = os.path.join(PROJECTS_DIR, filename)
+        if not os.path.exists(filepath):
+            return {"status": "error", "message": "File not found"}
+        
+        with open(filepath, 'r', encoding='utf-8') as f:
+            project_data = json.load(f)
+        
+        return {"status": "success", "data": project_data}
+    except Exception as e:
+        logger.error(f"Error loading project: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.delete("/api/project/delete")
+async def delete_project(request: Request):
+    """Șterge un proiect"""
+    try:
+        data = await request.json()
+        filename = data.get('filename')
+        
+        if not filename:
+            return {"status": "error", "message": "Filename required"}
+        
+        filepath = os.path.join(PROJECTS_DIR, filename)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            logger.info(f"✅ Proiect șters: {filename}")
+            return {"status": "success"}
+        else:
+            return {"status": "error", "message": "File not found"}
+    except Exception as e:
+        logger.error(f"Error deleting project: {e}")
+        return {"status": "error", "message": str(e)}
+    
+
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -43,7 +208,9 @@ running    = False
 paused     = False
 target_channel  = None
 keywords_list: list = []
-similarity_mode = "similar"   # "repost" | "similar" | "stylography"
+# MODIFICARE: Am adăugat noile moduri de similaritate
+similarity_mode = "direct"      # "direct" | "hibrid" | "tranzitiv"
+analysis_mode = "similar"       # păstrăm modul intern "repost" | "similar" | "stylography"
 
 nodes_data: dict = {}   # {ch: {id, label, subscribers}}
 edges_data: dict = {}   # {(c1,c2): float}  — forta relatie
@@ -82,11 +249,394 @@ THRESHOLD = {
     "similar":     0.72,
     "stylography": 0.72,
 }
+
+# NOU: Praguri pentru modurile de inferență
+INFERENCE_THRESHOLD = {
+    "direct":   0.72,  # pragul actual pentru comparații directe
+    "hibrid":   0.65,  # mai permisiv pentru hibrid
+    "tranzitiv": 0.60,  # și mai permisiv pentru tranzitiv
+}
+
 # Prag minim pentru scorul de aliniere NLP (bonus, nu conditie blocanta)
 NLP_ALIGNMENT_MIN = 0.3
 
 # Decay de baza per ciclu; relatiile puternice decad mai lent (logaritmic).
 DECAY_BASE = 0.88
+
+# ─────────────────────────────────────────────
+# Funcția pentru backup complet (METODA 4)
+# ─────────────────────────────────────────────
+def full_backup():
+    """
+    Backup complet - salvează ABSOLUT TOATE datele în format pickle și JSON
+    Include toate cache-urile, embedding-urile, și starea completă a sistemului.
+    """
+    # Asigură-te că directorul de backup există
+    os.makedirs("backups", exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"backups/full_backup_{timestamp}.pkl"  # folosește pickle pentru obiecte complexe
+    
+    # Pregătește datele pentru backup
+    backup = {
+        "timestamp": timestamp,
+        "version": "2.0",
+        
+        # Date de bază
+        "channels": list(channels_set),
+        "target": target_channel,
+        "keywords": keywords_list,
+        "mode": similarity_mode,
+        "running": running,
+        "paused": paused,
+        
+        # Graf
+        "nodes": nodes_data,
+        "edges": {f"{k[0]}|{k[1]}": v for k, v in edges_data.items()},
+        
+        # Cache-uri text
+        "ch_msgs_cache": ch_msgs_cache,
+        "ch_msgs_set": {k: list(v) for k, v in ch_msgs_set.items()},
+        
+        # Embedding-uri (partea critică!)
+        "ch_embs_cache": {},
+        # Cache-uri analiză
+        "ch_style_cache": {},
+        "ch_lang_cache": ch_lang_cache,
+        
+        # Entități și istoric
+        "global_entities": global_entities,
+        "posts_history": posts_history[-500:],
+        "nlp_msg_cache": {str(k): v for k, v in nlp_msg_cache.items()},  # hash e int
+        
+        # Stare sistem
+        "dirty_channels": list(dirty_channels),
+        "stats": {
+            "total_channels": len(channels_set),
+            "total_edges": len(edges_data),
+            "total_messages": sum(len(v) for v in ch_msgs_cache.values()),
+            "total_embeddings": sum(1 for v in ch_embs_cache.values() if v)
+        }
+    }
+    
+    # Procesează embedding-urile (converteste numpy array în listă)
+    for ch, data in ch_embs_cache.items():
+        if data and "matrix" in data and data["matrix"] is not None:
+            backup["ch_embs_cache"][ch] = {
+                "orig_texts": data["orig_texts"],
+                "matrix": data["matrix"].tolist()  # numpy -> list
+            }
+    
+    # Procesează stilometria (converteste numpy array în listă)
+    for k, v in ch_style_cache.items():
+        if isinstance(v, np.ndarray):
+            backup["ch_style_cache"][k] = v.tolist()
+        else:
+            backup["ch_style_cache"][k] = v
+    
+    # Salvează în format pickle (mai eficient pentru obiecte complexe)
+    with open(filename, 'wb') as f:
+        pickle.dump(backup, f)
+    
+    # Și o copie JSON pentru citire ușoară (fără embeddings)
+    json_filename = f"backups/backup_{timestamp}.json"
+    json_backup = {k: v for k, v in backup.items() if k != "ch_embs_cache"}
+    with open(json_filename, 'w', encoding='utf-8') as f:
+        json.dump(json_backup, f, ensure_ascii=False, indent=2)
+    
+    logger.info(f"✅ Backup complet salvat: {filename}")
+    logger.info(f"✅ Backup JSON salvat: {json_filename}")
+    logger.info(f"📊 Statistici: {backup['stats']['total_channels']} canale, {backup['stats']['total_edges']} muchii, {backup['stats']['total_messages']} mesaje")
+    
+    return filename
+
+
+def restore_full_backup(filename):
+    """
+    Restaurează un backup complet creat cu full_backup()
+    """
+    global channels_set, nodes_data, edges_data, posts_history
+    global target_channel, keywords_list, similarity_mode, global_entities
+    global ch_msgs_cache, ch_msgs_set, ch_embs_cache, ch_style_cache
+    global ch_lang_cache, dirty_channels, running, paused
+    global nlp_msg_cache
+    
+    try:
+        with open(filename, 'rb') as f:
+            backup = pickle.load(f)
+        
+        # Verifică versiunea
+        version = backup.get("version", "1.0")
+        logger.info(f"Restaurare backup versiunea {version} din {backup.get('timestamp')}")
+        
+        # Restaurează datele de bază
+        channels_set = set(backup["channels"])
+        target_channel = backup.get("target")
+        keywords_list = backup.get("keywords", [])
+        similarity_mode = backup.get("mode", "direct")
+        running = backup.get("running", False)
+        paused = backup.get("paused", False)
+        
+        # Restaurează date rețea
+        nodes_data = backup.get("nodes", {})
+        
+        # Restaurează edges (convertește cheile înapoi în tuple)
+        edges_data.clear()
+        for k_str, v in backup.get("edges", {}).items():
+            c1, c2 = k_str.split("|")
+            edges_data[(c1, c2)] = v
+        
+        # Restaurează cache-uri text
+        ch_msgs_cache = backup.get("ch_msgs_cache", {})
+        
+        # Restaurează set-uri (convertește listă în set)
+        ch_msgs_set.clear()
+        for k, v in backup.get("ch_msgs_set", {}).items():
+            ch_msgs_set[k] = set(v)
+        
+        # Restaurează embedding-uri (reconstruiește numpy arrays)
+        ch_embs_cache.clear()
+        for ch, data in backup.get("ch_embs_cache", {}).items():
+            if data and "matrix" in data and data["matrix"]:
+                ch_embs_cache[ch] = {
+                    "orig_texts": data["orig_texts"],
+                    "matrix": np.array(data["matrix"])
+                }
+        
+        # Restaurează stilometrie (convertește listă înapoi în numpy array)
+        ch_style_cache.clear()
+        for k, v in backup.get("ch_style_cache", {}).items():
+            if isinstance(v, list):
+                ch_style_cache[k] = np.array(v)
+            else:
+                ch_style_cache[k] = v
+        
+        ch_lang_cache = backup.get("ch_lang_cache", {})
+        
+        # Restaurează entități
+        global_entities = backup.get("global_entities", {"PER": {}, "ORG": {}})
+        
+        # Restaurează istoric
+        posts_history = backup.get("posts_history", [])
+        
+        # Restaurează cache NLP (convertește cheile înapoi în int)
+        nlp_msg_cache.clear()
+        for k_str, v in backup.get("nlp_msg_cache", {}).items():
+            try:
+                nlp_msg_cache[int(k_str)] = v
+            except:
+                pass
+        
+        # Restaurează dirty channels
+        dirty_channels = set(backup.get("dirty_channels", []))
+        
+        logger.info(f"✅ Backup restaurat cu succes: {len(channels_set)} canale, {len(edges_data)} muchii")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Eroare la restaurarea backup-ului: {e}", exc_info=True)
+        return False
+
+
+# ─────────────────────────────────────────────
+# Funcții pentru salvarea/încărcarea proiectului
+# ─────────────────────────────────────────────
+def save_project_state():
+    """
+    Salvează starea completă a proiectului pentru monitorizare continuă.
+    Include toate cache-urile, datele și configurațiile.
+    """
+    project_data = {
+        # Configurații de bază
+        "version": "1.0.0",
+        "timestamp": datetime.now().isoformat(),
+        
+        # Canale și setări
+        "channels": list(channels_set),
+        "target_channel": target_channel,
+        "keywords": keywords_list,
+        "similarity_mode": similarity_mode,
+        
+        # Date rețea
+        "nodes": nodes_data,
+        "edges": {f"{k[0]}|{k[1]}": v for k, v in edges_data.items()},
+        
+        # Cache-uri text
+        "ch_msgs_cache": ch_msgs_cache,
+        "ch_msgs_set": {k: list(v) for k, v in ch_msgs_set.items()},
+        
+        # Cache-uri analiză
+        "ch_style_cache": {k: v.tolist() if isinstance(v, np.ndarray) else v 
+                          for k, v in ch_style_cache.items()},
+        "ch_lang_cache": ch_lang_cache,
+        
+        # Entități și istoric
+        "global_entities": global_entities,
+        "posts_history": posts_history[-100:],  # Ultimele 100 de potriviri
+        
+        # Timestamps pentru decay
+        "last_save": datetime.now().timestamp()
+    }
+    
+    # Adaugă embedding-urile (compresie optională)
+    if ch_embs_cache:
+        project_data["ch_embs_cache"] = {}
+        for ch, emb_data in ch_embs_cache.items():
+            if emb_data and "matrix" in emb_data and emb_data["matrix"] is not None:
+                # Convertim numpy array în listă pentru serializare
+                project_data["ch_embs_cache"][ch] = {
+                    "orig_texts": emb_data["orig_texts"],
+                    "matrix": emb_data["matrix"].tolist() if emb_data["matrix"] is not None else None
+                }
+    
+    return project_data
+
+
+def load_project_state(project_data):
+    """
+    Încarcă o stare salvată anterior a proiectului.
+    """
+    global channels_set, nodes_data, edges_data, posts_history
+    global target_channel, keywords_list, similarity_mode, global_entities
+    global ch_msgs_cache, ch_msgs_set, ch_embs_cache, ch_style_cache, ch_lang_cache
+    global dirty_channels
+    
+    try:
+        # Verifică versiunea
+        version = project_data.get("version", "1.0.0")
+        
+        # Restaurează configurații de bază
+        channels_set = set(project_data.get("channels", []))
+        target_channel = project_data.get("target_channel")
+        keywords_list = project_data.get("keywords", [])
+        similarity_mode = project_data.get("similarity_mode", "direct")
+        
+        # Restaurează date rețea
+        nodes_data = project_data.get("nodes", {})
+        
+        # Restaurează edges (convertește cheile înapoi în tuple)
+        edges_data.clear()
+        for k_str, v in project_data.get("edges", {}).items():
+            c1, c2 = k_str.split("|")
+            edges_data[(c1, c2)] = v
+        
+        # Restaurează cache-uri text
+        ch_msgs_cache = project_data.get("ch_msgs_cache", {})
+        
+        # Restaurează set-uri (convertește listă în set)
+        ch_msgs_set.clear()
+        for k, v in project_data.get("ch_msgs_set", {}).items():
+            ch_msgs_set[k] = set(v)
+        
+        # Restaurează stilometrie (convertește listă înapoi în numpy array)
+        ch_style_cache.clear()
+        for k, v in project_data.get("ch_style_cache", {}).items():
+            if isinstance(v, list):
+                ch_style_cache[k] = np.array(v)
+            else:
+                ch_style_cache[k] = v
+        
+        ch_lang_cache = project_data.get("ch_lang_cache", {})
+        
+        # Restaurează entități
+        global_entities = project_data.get("global_entities", {"PER": {}, "ORG": {}})
+        
+        # Restaurează istoric
+        posts_history = project_data.get("posts_history", [])
+        
+        # Restaurează embedding-uri
+        ch_embs_cache.clear()
+        for ch, emb_data in project_data.get("ch_embs_cache", {}).items():
+            if emb_data and "matrix" in emb_data and emb_data["matrix"]:
+                ch_embs_cache[ch] = {
+                    "orig_texts": emb_data["orig_texts"],
+                    "matrix": np.array(emb_data["matrix"])
+                }
+        
+        # Marchează toate canalele ca dirty pentru re-analiză
+        dirty_channels = set(channels_set)
+        
+        logger.info(f"Proiect încărcat cu succes: {len(channels_set)} canale, {len(edges_data)} conexiuni")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Eroare la încărcarea proiectului: {e}")
+        return False
+
+
+def hash_project_state(state):
+    """Generează un hash unic pentru starea proiectului"""
+    state_str = json.dumps(state, sort_keys=True, default=str)
+    return hashlib.md5(state_str.encode()).hexdigest()[:8]
+
+
+def build_graph():
+    """Construiește graful NetworkX pentru trimitere în UI"""
+    G = nx.Graph()
+    for (u, v), w in edges_data.items():
+        G.add_edge(u, v, weight=w)
+    for c in channels_set:
+        if c not in G:
+            G.add_node(c)
+    return G
+
+
+async def send_graph_update(websocket, G):
+    """Trimite actualizarea grafului către client"""
+    comms = {}
+    try:
+        from networkx.algorithms.community import louvain_communities
+        if G.size() > 0:
+            for idx, s in enumerate(louvain_communities(G, weight="weight")):
+                for n in s:
+                    comms[n] = idx
+    except Exception as e:
+        logger.debug(f"Community error: {e}")
+
+    deg, btw, cls, pgr, eig = {}, {}, {}, {}, {}
+    if G.size() > 0:
+        try: deg = nx.degree_centrality(G)
+        except Exception: pass
+        try: btw = nx.betweenness_centrality(G, weight="weight")
+        except Exception: pass
+        try: cls = nx.closeness_centrality(G)
+        except Exception: pass
+        try: pgr = nx.pagerank(G, weight="weight")
+        except Exception: pass
+        try: eig = nx.eigenvector_centrality_numpy(G, weight="weight")
+        except Exception: pass
+
+    displayed = set(G.nodes())
+    if target_channel and target_channel in G and G.degree(target_channel) > 0:
+        try:
+            displayed = nx.node_connected_component(G, target_channel)
+        except Exception:
+            pass
+
+    f_nodes = []
+    for n in displayed:
+        if n not in nodes_data:
+            continue
+        nd = nodes_data[n].copy()
+        nd.update({
+            "community": comms.get(n, 0),
+            "metrics": {
+                "degree":      deg.get(n, 0),
+                "betweenness": btw.get(n, 0),
+                "closeness":   cls.get(n, 0),
+                "eigenvector": eig.get(n, 0),
+                "diffusion":   pgr.get(n, 0),
+            },
+        })
+        f_nodes.append(nd)
+
+    f_edges = [
+        {"from": k[0], "to": k[1], "value": round(v, 3), "title": f"Forta: {v:.2f}"}
+        for k, v in edges_data.items()
+        if k[0] in displayed and k[1] in displayed
+    ]
+    
+    return {"nodes": f_nodes, "edges": f_edges}
 
 # ─────────────────────────────────────────────
 # Incarcare modele NLP
@@ -141,13 +691,10 @@ def _notify_state(loop):
 
 
 def start_nlp_loading(loop=None):
-    # Bug #4 fix: primim loop-ul din startup_event(), nu il obtinem cu
-    # get_event_loop() care e deprecat in Python 3.10+ si RuntimeError in 3.12+.
     if loop is None:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # Dacă nu există loop running, creăm unul nou
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
     threading.Thread(target=_load_nlp_models, args=(loop,), daemon=True).start()
@@ -178,27 +725,9 @@ def text_matches_keywords(text: str, keywords: list) -> bool:
     return any(k.lower() in lo for k in keywords)
 
 
-# Greutăți per dimensiune stilometrică — ticurile de scriere primesc greutate mai mare.
-# Suma = 1.0 după normalizare (se face la prima utilizare).
 _STYLE_DIM_WEIGHTS_RAW = np.array([
-    0.5,   # 0  char_len      — util, dar nu decisiv
-    1.5,   # 1  punc          — semn de stil clar
-    1.5,   # 2  special/emoji — semn de stil clar
-    1.0,   # 3  word_len
-    2.0,   # 4  ellipsis      — tic de scriere
-    2.0,   # 5  exclaim       — tic de scriere
-    1.5,   # 6  uppercase     — stil agresiv vs. normal
-    1.0,   # 7  ttr
-    1.0,   # 8  hapax
-    1.0,   # 9  sent_len
-    1.5,   # 10 stopword      — densitate funcțională
-    1.0,   # 11 digit
-    1.0,   # 12 vocab_richness
-    1.5,   # 13 short_sent
-    1.5,   # 14 long_sent
-    2.0,   # 15 questions     — tic de scriere
-    1.0,   # 16 para_var
-    1.5,   # 17 has_link
+    0.5, 1.5, 1.5, 1.0, 2.0, 2.0, 1.5, 1.0, 1.0, 1.0,
+    1.5, 1.0, 1.0, 1.5, 1.5, 2.0, 1.0, 1.5,
 ], dtype=float)
 _STYLE_DIM_WEIGHTS = _STYLE_DIM_WEIGHTS_RAW / _STYLE_DIM_WEIGHTS_RAW.sum()
 
@@ -208,7 +737,6 @@ _STYLE_DIM_NAMES = [
     "vocab_richness", "short_sent", "long_sent", "questions", "para_var", "has_link",
 ]
 
-# Stopwords pentru română și rusă (cuvinte funcționale, nu de conținut)
 _STOPWORDS_STYLE = {
     "si", "in", "la", "de", "cu", "ca", "este", "sunt", "nu", "se",
     "pe", "din", "o", "un", "sau", "care", "pentru", "dar", "mai",
@@ -218,100 +746,46 @@ _STOPWORDS_STYLE = {
 
 
 def get_stylometric_fingerprint(texts: list) -> np.ndarray:
-    """
-    Vector stilografic cu 18 dimensiuni grupate în trei categorii:
-
-    Suprafață textuală (6):
-        0  avg_char_len       — lungimea medie a mesajului în caractere
-        1  punc_density       — densitate punctuație (.,!?;:) per char
-        2  special_density    — densitate caractere speciale/emoji per char
-        3  avg_word_len       — lungimea medie a cuvântului în caractere
-        4  ellipsis_rate      — frecvența „..." per char
-        5  exclaim_rate       — frecvența „!!" per char
-        6  uppercase_ratio    — proporția literelor mari din total litere
-
-    Lexic & vocabular (6):
-        7  ttr               — type-token ratio (vocabular unic / total cuvinte)
-        8  hapax_ratio       — cuvinte care apar o singură dată / total unice
-        9  avg_sent_len      — cuvinte per propoziție (split pe [.!?])
-        10 stopword_ratio    — proporția stopwords din total cuvinte
-        11 digit_ratio       — proporția cifrelor din total caractere
-        12 vocab_richness    — log(nr. cuvinte unice + 1) / log(nr. total + 1)
-
-    Ritm & structură (6):
-        13 short_sent_ratio  — proporția propozițiilor cu < 5 cuvinte
-        14 long_sent_ratio   — proporția propozițiilor cu > 20 cuvinte
-        15 question_rate     — frecvența „?" per mesaj
-        16 paragraph_var     — deviația standard a lungimii mesajelor (normalizată)
-        17 link_density      — proporția mesajelor care conțin URL-uri
-
-    Compararea între canale se face per-mesaj (distribuție), nu doar ca medii —
-    folosim mediană + IQR pentru robustețe la outlieri.
-    """
     if not texts or len(texts) < 2:
         return np.zeros(18)
 
     def _msg_vec(t: str) -> np.ndarray:
-        """Extrage vectorul de 18 trăsături pentru un mesaj, toate pre-normalizate în [0,1]."""
         from collections import Counter
         n_char   = len(t) + 1
         words_lo = [w.lower().strip(".,!?;:\"'()[]") for w in t.split() if w.strip()]
         sents    = [s.strip() for s in re.split(r'[.!?]+', t) if s.strip()]
         n_sents  = len(sents) + 1
         sent_lens = [len(s.split()) for s in sents] if sents else [0]
-        # Bug #8 fix: Counter O(n) in loc de words_lo.count(w) care era O(n²)
         freq     = Counter(words_lo)
         n_unique = len(freq) + 1
         n_total  = len(words_lo) + 1
         letters  = re.findall(r'[a-zA-Z\u00C0-\u024F\u0400-\u04FF]', t)
         upper    = re.findall(r'[A-Z\u00C0-\u00DE\u0400-\u042F]', t)
         return np.array([
-            # 0  char_len normalizat la 500 chars max
             min(len(t) / 500.0, 1.0),
-            # 1  densitate punctuatie
             len(re.findall(r'[.,!?;:]', t)) / n_char,
-            # 2  densitate caractere speciale/emoji
             len(re.findall(r'[^\w\s]', t)) / n_char,
-            # 3  lungime medie cuvant normalizata la 15
             min(sum(len(w) for w in words_lo) / ((len(words_lo) + 1) * 15.0), 1.0),
-            # 4  rata ellipsis (... per char, x100 pentru vizibilitate)
             min(len(re.findall(r'\.\.\.', t)) / n_char * 100, 1.0),
-            # 5  rata exclamare dubla (!! per char, x100)
             min(len(re.findall(r'!!', t)) / n_char * 100, 1.0),
-            # 6  proportia literelor mari
             len(upper) / (len(letters) + 1),
-            # 7  type-token ratio
             n_unique / n_total,
-            # 8  hapax legomena ratio — Bug #8 fix: Counter O(n) nu O(n²)
             sum(1 for w, c in freq.items() if c == 1) / n_unique,
-            # 9  lungime medie propozitie normalizata la 30 cuvinte
             min(float(np.mean(sent_lens)) / 30.0, 1.0),
-            # 10 rata stopwords
             sum(1 for w in words_lo if w in _STOPWORDS_STYLE) / n_total,
-            # 11 rata cifre
             len(re.findall(r'\d', t)) / n_char,
-            # 12 bogatia vocabularului (log ratio)
             float(np.log(n_unique) / (np.log(n_total) + 1e-9)),
-            # 13 proportia propozitiilor scurte (< 5 cuvinte)
             sum(1 for l in sent_lens if l < 5) / n_sents,
-            # 14 proportia propozitiilor lungi (> 20 cuvinte)
             sum(1 for l in sent_lens if l > 20) / n_sents,
-            # 15 rata intrebari normalizata la 3 per mesaj
             min(t.count("?") / 3.0, 1.0),
-            # 16 placeholder para_var — se calculeaza la nivel corpus
             float(len(t)),
-            # 17 prezenta URL
             1.0 if re.search(r'https?://', t) else 0.0,
         ], dtype=float)
 
-    # Calculam vectorul per mesaj si luam MEDIANA (robusta la outlieri)
     all_vecs = [_msg_vec(t) for t in texts]
     medians  = np.median(np.stack(all_vecs), axis=0)
-
-    # Dim 16: inlocuim placeholder cu variatia lungimii mesajelor (normalizata)
     char_lens = np.array([len(t) for t in texts], dtype=float)
     medians[16] = min(np.std(char_lens) / (np.mean(char_lens) + 1.0), 1.0)
-
     return medians
 
 
@@ -393,22 +867,9 @@ def scrape_channel(username: str) -> dict:
 # Embedding incremental
 # ─────────────────────────────────────────────
 def update_embeddings_incremental(ch: str, new_texts: list):
-    """
-    Encodează DOAR mesajele noi și le concatenează la matricea existentă.
-
-    IMPORTANT — aliniament index:
-    ch_embs_cache[ch]["orig_texts"] păstrează textele ORIGINALE (nemodificate)
-    în aceeași ordine cu rândurile din matrice. Astfel sims[i,j] corespunde
-    întotdeauna corect cu orig_texts[i] și orig_texts[j].
-
-    Structura ch_embs_cache[ch]:
-        "orig_texts": [str, ...]   — texte originale, paralele cu rândurile matricei
-        "matrix":     np.ndarray   — shape (N, embedding_dim)
-    """
     if not new_texts or similarity_model is None:
         return
 
-    # Curățăm pentru encoding, dar păstrăm și originalele
     clean_new = [clean_text(t) for t in new_texts]
     valid_pairs = [(orig, cl) for orig, cl in zip(new_texts, clean_new) if len(cl) > 10]
     if not valid_pairs:
@@ -423,7 +884,6 @@ def update_embeddings_incremental(ch: str, new_texts: list):
         ch_embs_cache[ch] = {"orig_texts": orig_valid, "matrix": new_embs}
     else:
         existing = ch_embs_cache[ch]
-        # Bug #5 fix: Verificăm dacă existing are cheile corecte
         if "orig_texts" not in existing or "matrix" not in existing:
             ch_embs_cache[ch] = {"orig_texts": orig_valid, "matrix": new_embs}
         else:
@@ -445,29 +905,144 @@ def get_embedding_matrix(ch: str):
 # Decay logaritmic
 # ─────────────────────────────────────────────
 def _decay_edge(strength: float) -> float:
-    """
-    Relatiile puternice (forta ~ 10) decad mai lent decat cele slabe (forta ~ 1).
-    Factor efectiv: intre DECAY_BASE si DECAY_BASE + 0.1
-    """
     log_factor = 0.1 * (np.log10(strength + 1) / np.log10(11))
     return strength * (DECAY_BASE + log_factor)
+
+# ─────────────────────────────────────────────
+# NOI: Funcții pentru modurile de inferență
+# ─────────────────────────────────────────────
+async def perform_hybrid_inference(max_inferences: int):
+    """Mod hibrid: completează cu inferențe după analiza directă"""
+    global edges_data, posts_history
+    
+    if len(edges_data) < 20:
+        return
+        
+    try:
+        G = nx.Graph()
+        for (u, v), w in edges_data.items():
+            if w > 0.5:  # doar relații semnificative
+                G.add_edge(u, v, weight=w)
+        
+        if G.number_of_edges() < 10:
+            return
+            
+        inferences = []
+        for b in list(G.nodes())[:50]:  # limităm pentru performanță
+            neighbors = list(G.neighbors(b))
+            for i, a in enumerate(neighbors):
+                for c in neighbors[i+1:]:
+                    if not G.has_edge(a, c):
+                        w_ab = G[a][b]['weight']
+                        w_bc = G[b][c]['weight']
+                        inferred = (w_ab * w_bc) ** 0.5
+                        if inferred > INFERENCE_THRESHOLD["hibrid"]:
+                            inferences.append((a, c, inferred, b))
+        
+        # Adaugă cele mai bune inferențe
+        inferences.sort(key=lambda x: -x[2])
+        added = 0
+        for a, c, w, via in inferences[:max_inferences]:
+            pair = tuple(sorted([a, c]))
+            if pair not in edges_data:
+                edges_data[pair] = min(w * 1.3, 10.0)
+                posts_history.append({
+                    "type": "hibrid",
+                    "ch1": a,
+                    "ch2": c,
+                    "via": via,
+                    "confidence": round(w, 3),
+                    "time": datetime.now().strftime("%H:%M:%S")
+                })
+                added += 1
+                logger.info(f"[Hibrid] Inferență: {a} ~ {c} (via {via}, {w:.2f})")
+        
+        if added > 0:
+            logger.info(f"[Hibrid] Adăugate {added} muchii noi")
+            
+    except Exception as e:
+        logger.error(f"[Hibrid] Eroare: {e}")
+
+
+async def perform_transitive_inference(max_inferences: int):
+    """Mod tranzitiv: prioritizăm descoperirea de conexiuni prin lanțuri"""
+    global edges_data, posts_history
+    
+    if len(edges_data) < 10:
+        return
+        
+    try:
+        G = nx.Graph()
+        for (u, v), w in edges_data.items():
+            if w > 0.4:  # prag mai mic în modul tranzitiv
+                G.add_edge(u, v, weight=w)
+        
+        if G.number_of_edges() < 5:
+            return
+            
+        inferences = []
+        
+        # Lanțuri de lungime 2 (A-B-C)
+        for b in list(G.nodes())[:30]:
+            neighbors = list(G.neighbors(b))
+            for i, a in enumerate(neighbors):
+                for c in neighbors[i+1:]:
+                    if not G.has_edge(a, c):
+                        w_ab = G[a][b]['weight']
+                        w_bc = G[b][c]['weight']
+                        inferred = (w_ab * w_bc) ** 0.5 * 1.2  # bonus în modul tranzitiv
+                        if inferred > INFERENCE_THRESHOLD["tranzitiv"]:
+                            inferences.append((a, c, inferred, f"{b}", 2))
+        
+        # Lanțuri de lungime 3 (A-B-C-D) - doar dacă avem nevoie de mai multe
+        if len(inferences) < max_inferences * 0.7:
+            nodes_list = list(G.nodes())[:15]  # limitat pentru performanță
+            for a in nodes_list:
+                for b in G.neighbors(a):
+                    for c in G.neighbors(b):
+                        if c != a and not G.has_edge(a, c):
+                            for d in G.neighbors(c):
+                                if d != b and d != a and not G.has_edge(a, d):
+                                    w_ab = G[a][b]['weight']
+                                    w_bc = G[b][c]['weight']
+                                    w_cd = G[c][d]['weight']
+                                    inferred = (w_ab * w_bc * w_cd) ** (1/3) * 1.5
+                                    if inferred > INFERENCE_THRESHOLD["tranzitiv"] * 0.9:
+                                        inferences.append((a, d, inferred, f"{b}→{c}", 3))
+        
+        # Adaugă inferențele
+        inferences.sort(key=lambda x: -x[2])
+        added = 0
+        for a, c, w, via, length in inferences[:max_inferences]:
+            pair = tuple(sorted([a, c]))
+            if pair not in edges_data:
+                edges_data[pair] = min(w * 1.5, 10.0)
+                posts_history.append({
+                    "type": "tranzitiv",
+                    "ch1": a,
+                    "ch2": c,
+                    "via": via,
+                    "length": length,
+                    "confidence": round(w, 3),
+                    "time": datetime.now().strftime("%H:%M:%S")
+                })
+                added += 1
+                logger.info(f"[Tranzitiv-{length}] {a} ~ {c} (via {via}, {w:.2f})")
+        
+        if added > 0:
+            logger.info(f"[Tranzitiv] Adăugate {added} muchii noi")
+            
+    except Exception as e:
+        logger.error(f"[Tranzitiv] Eroare: {e}")
 
 # ─────────────────────────────────────────────
 # Analiza globala a unei perechi de canale
 # ─────────────────────────────────────────────
 def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
-    """
-    Evalueaza similaritatea GLOBALA intre doua canale folosind INTREAGA
-    matrice de embeddings disponibila — nu doar un singur best-match.
-
-    Returneaza (edge_score: float, best_match: dict | None).
-    """
-    # Bug #7 fix: Adăugat MAX_HITS la începutul funcției
     MAX_HITS = 10
     score = 0.0
     match = None
 
-    # ── Stilografie (detectare autor similar) ────────────────────────
     if mode == "stylography":
         lang1 = ch_lang_cache.get(c1, "other")
         lang2 = ch_lang_cache.get(c2, "other")
@@ -479,22 +1054,16 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
         if v1 is None or v2 is None:
             return 0.0, None
 
-        # Mascăm dimensiunile inactive (ambele zero) — nu discriminează nimic
         active = (np.abs(v1) + np.abs(v2)) > 1e-5
         if active.sum() < 4:
             return 0.0, None
 
         w  = _STYLE_DIM_WEIGHTS * active.astype(float)
-        w /= w.sum() + 1e-9   # renormalizăm pe dimensiunile active
+        w /= w.sum() + 1e-9
 
-        # ── Metrica 1: Bray-Curtis similaritate ponderată (cea mai discriminativă) ──
-        # BC dissimilarity = sum(w * |a-b|) / sum(w * (|a|+|b|))
-        # Diferit de cosinus — măsoară proporțional diferența per dimensiune
         bc_diss = np.sum(w * np.abs(v1 - v2)) / (np.sum(w * (np.abs(v1) + np.abs(v2))) + 1e-9)
         bc_sim  = 1.0 - bc_diss
 
-        # ── Metrica 2: Convergență ponderată ──────────────────────────────────────
-        # Câte dimensiuni au diferență relativă < 15%, ponderat după importanță
         conv_w = 0.0
         active_w_sum = float(_STYLE_DIM_WEIGHTS[active].sum()) + 1e-9
         for i, (a, b) in enumerate(zip(v1, v2)):
@@ -505,19 +1074,15 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
                 conv_w += _STYLE_DIM_WEIGHTS[i]
         conv_w /= active_w_sum
 
-        # ── Metrica 3: Cosinus pe vectorii ponderați (sqrt pentru a evita saturarea) ──
         v1w = np.sqrt(np.abs(v1) * _STYLE_DIM_WEIGHTS)
         v2w = np.sqrt(np.abs(v2) * _STYLE_DIM_WEIGHTS)
         cos = float(cosine_similarity(v1w.reshape(1, -1), v2w.reshape(1, -1))[0, 0])
 
-        # ── Scor combinat ─────────────────────────────────────────────────────────
-        # Bray-Curtis (45%) + Convergență (35%) + Cosinus (20%)
         combined = 0.45 * bc_sim + 0.35 * conv_w + 0.20 * cos
 
         if combined < threshold:
             return 0.0, None
 
-        # ── Detaliu per dimensiune pentru raportul în UI ──────────────────────────
         n_agree  = sum(1 for i, (a, b) in enumerate(zip(v1, v2))
                        if active[i] and abs(a-b) / max(abs(a), abs(b), 1e-5) < 0.15)
         n_active = int(active.sum())
@@ -533,7 +1098,6 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
             if active[i]
         }
 
-        # ── Mesajele reprezentative: cel mai aproape de profilul median al canalului ──
         def pick_representative(ch: str, vec: np.ndarray) -> str:
             msgs = ch_msgs_cache.get(ch, [])
             if not msgs:
@@ -542,7 +1106,6 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
             for m in msgs:
                 if not m.strip():
                     continue
-                # Proxy rapid pe primele 4 dimensiuni (char_len, punc, special, word_len)
                 words = m.split()
                 n_char = len(m) + 1
                 proxy = np.array([
@@ -559,7 +1122,7 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
         ex1 = pick_representative(c1, v1)
         ex2 = pick_representative(c2, v2)
 
-        edge_score = combined * 3.0   # amplificare la scala [0, 10]
+        edge_score = combined * 3.0
         match = {
             "type":                "stylography",
             "ch1":                 c1,
@@ -576,16 +1139,13 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
         }
         return edge_score, match
 
-    # ── Matrice de embeddings ─────────────────────────────────────────
     m1, orig1 = get_embedding_matrix(c1)
     m2, orig2 = get_embedding_matrix(c2)
     if m1 is None or m2 is None or m1.shape[0] == 0 or m2.shape[0] == 0:
         return 0.0, None
 
-    # sims[i,j] = similaritate cosinus intre mesajul i din c1 si mesajul j din c2
-    sims = cosine_similarity(m1, m2)   # shape (N1, N2)
+    sims = cosine_similarity(m1, m2)
 
-    # ── Repostari ─────────────────────────────────────────────────────
     if mode == "repost":
         hits   = np.where(sims > threshold)
         n_hits = len(hits[0])
@@ -598,24 +1158,18 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
         match = {
             "type": "repost", "ch1": c1, "ch2": c2,
             "score": float(sims[bi, bj]),
-            # Bug #5 fix: folosim orig_texts aliniate cu matricea, nu msgs_cache
             "ch1_msg": orig1[bi] if bi < len(orig1) else "",
             "ch2_msg": orig2[bj] if bj < len(orig2) else "",
             "n_hits": n_hits,
         }
         return score, match
 
-    # ── Aliniere ideologica profunda (similar) ────────────────────────
     above = sims > threshold
     if not above.any():
         return 0.0, None
 
-    # Bug #7 fix: limiteaza perechile procesate la primele MAX_HITS sortate
-    # dupa scor descrescator. zip(*np.where(above)) poate produce sute de
-    # perechi daca threshold e mic — fiecare apeleaza analyse_text() x2.
     hit_rows, hit_cols = np.where(above)
     hit_scores = sims[hit_rows, hit_cols]
-    # Sortam descrescator si luam primele MAX_HITS
     top_idx  = np.argsort(hit_scores)[::-1][:MAX_HITS]
     hit_pairs = list(zip(hit_rows[top_idx], hit_cols[top_idx]))
 
@@ -624,8 +1178,6 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
     best_val       = 0.0
 
     for (i, j) in hit_pairs:
-        # Bug #5 fix: indexam direct orig_texts, nu msgs_cache (care poate
-        # avea lungime diferita fata de matrice dupa fereastra glisanta)
         if i >= len(orig1) or j >= len(orig2):
             continue
 
@@ -633,7 +1185,6 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
         m2_text = orig2[j]
         sem_sim = float(sims[i, j])
 
-        # Filtru heuristic: suprapunere mare de cuvinte scurte = zgomot lexical
         w1 = set(m1_text.lower().split())
         w2 = set(m2_text.lower().split())
         common = w1 & w2
@@ -641,11 +1192,7 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
             if len(common) / max(len(w1), len(w2), 1) > 0.4:
                 continue
 
-        # Bug #1 fix: sem_sim > threshold este SUFICIENT pentru detectie.
-        # NLP-ul adauga un bonus de aliniere, dar NU mai este o conditie
-        # blocanta. Daca NLP nu e gata sau nu gaseste entitati, scorul
-        # semantic singur trece perechea drept relevanta.
-        base_strength = sem_sim  # detectie garantata peste prag
+        base_strength = sem_sim
 
         nlp1 = analyse_text(m1_text)
         nlp2 = analyse_text(m2_text)
@@ -661,7 +1208,6 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
             update_entity_stats(nlp1)
             update_entity_stats(nlp2)
 
-        # Scorul final al perechii: semantic + bonus NLP (max 1.5×)
         pair_strength = base_strength * (1.0 + nlp_bonus)
 
         total_strength += pair_strength
@@ -716,7 +1262,7 @@ class ConnectionManager:
             "keywords": keywords_list,
             "nlp_ready": nlp_ready,
             "nlp_status": nlp_status,
-            "similarity_mode": similarity_mode,
+            "similarity_mode": similarity_mode,  # "direct", "hibrid", "tranzitiv"
             "global_entities": global_entities,
         }
         await self.broadcast(json.dumps(state))
@@ -728,7 +1274,7 @@ manager = ConnectionManager()
 @app.on_event("startup")
 async def startup_event():
     logger.info("Pornire aplicatie — initiere incarcare modele NLP.")
-    loop = asyncio.get_running_loop()   # loop-ul real al uvicorn
+    loop = asyncio.get_running_loop()
     start_nlp_loading(loop)
 
 # ─────────────────────────────────────────────
@@ -801,12 +1347,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 target_channel = ch if (ch in channels_set and target_channel != ch) else None
                 await manager.send_state()
 
+            # MODIFICARE: Acțiune pentru setarea modului de similaritate
             elif action == "set_mode":
-                similarity_mode = cmd.get("mode", "similar")
-                # Schimbarea modului invalideaza toate edges — fortam re-analiza completa
-                edges_data.clear()
-                dirty_channels.update(channels_set)
-                await manager.send_state()
+                new_mode = cmd.get("mode", "direct")
+                if new_mode in ["direct", "hibrid", "tranzitiv"]:
+                    similarity_mode = new_mode
+                    edges_data.clear()  # resetăm muchiile la schimbarea modului
+                    dirty_channels.update(channels_set)
+                    logger.info(f"✅ Mod similaritate schimbat: {new_mode}")
+                    await manager.send_state()
 
             elif action == "start":
                 if not running:
@@ -825,7 +1374,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 paused = not paused
                 await manager.send_state()
 
-            elif action == "save_request":  # Bug #10 fix: Schimbat din "save_request" în "save_state" pentru consistență
+            elif action == "save_request":
                 payload = {
                     "channels": list(channels_set),
                     "edges": [
@@ -833,9 +1382,138 @@ async def websocket_endpoint(websocket: WebSocket):
                         for k, v in edges_data.items()
                     ],
                     "entities": global_entities,
-                    "posts_history": posts_history[-50:],  # Limităm la ultimele 50
+                    "posts_history": posts_history[-50:],
                 }
                 await manager.broadcast(json.dumps({"type": "save_file", "data": payload}))
+
+            # ── Acțiuni pentru backup complet (METODA 4) ────────────
+            elif action == "full_backup":
+                try:
+                    filename = full_backup()
+                    await websocket.send_text(json.dumps({
+                        "type": "backup_complete",
+                        "success": True,
+                        "filename": filename,
+                        "message": f"Backup complet salvat: {filename}"
+                    }))
+                except Exception as e:
+                    await websocket.send_text(json.dumps({
+                        "type": "backup_complete",
+                        "success": False,
+                        "message": f"Eroare la backup: {str(e)}"
+                    }))
+
+            elif action == "restore_backup":
+                filename = cmd.get("filename")
+                if filename and os.path.exists(filename):
+                    success = restore_full_backup(filename)
+                    if success:
+                        await manager.send_state()
+                        G = build_graph()
+                        graph_data = await send_graph_update(websocket, G)
+                        await websocket.send_text(json.dumps({
+                            "type": "graph_update",
+                            "nodes": graph_data["nodes"],
+                            "edges": graph_data["edges"]
+                        }))
+                        await websocket.send_text(json.dumps({
+                            "type": "restore_complete",
+                            "success": True,
+                            "message": f"Backup restaurat: {filename}"
+                        }))
+                    else:
+                        await websocket.send_text(json.dumps({
+                            "type": "restore_complete",
+                            "success": False,
+                            "message": "Eroare la restaurarea backup-ului"
+                        }))
+                else:
+                    await websocket.send_text(json.dumps({
+                        "type": "restore_complete",
+                        "success": False,
+                        "message": "Fișierul nu există"
+                    }))
+
+            elif action == "list_backups":
+                backups = []
+                if os.path.exists("backups"):
+                    for f in os.listdir("backups"):
+                        if f.endswith('.pkl') or f.endswith('.json'):
+                            filepath = os.path.join("backups", f)
+                            stat = os.stat(filepath)
+                            backups.append({
+                                "filename": f,
+                                "size": stat.st_size,
+                                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+                            })
+                await websocket.send_text(json.dumps({
+                    "type": "backups_list",
+                    "backups": sorted(backups, key=lambda x: x["modified"], reverse=True)
+                }))
+
+            # ── Acțiuni existente pentru salvare/încărcare proiect ────────────
+            elif action == "save_project":
+                project_state = save_project_state()
+                project_hash = hash_project_state(project_state)
+                response = {
+                    "type": "project_saved",
+                    "data": project_state,
+                    "hash": project_hash,
+                    "filename": f"telegram_monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tgm"
+                }
+                await websocket.send_text(json.dumps(response))
+
+            elif action == "load_project":
+                project_data = cmd.get("data")
+                if project_data and load_project_state(project_data):
+                    await manager.send_state()
+                    G = build_graph()
+                    graph_data = await send_graph_update(websocket, G)
+                    await websocket.send_text(json.dumps({
+                        "type": "graph_update",
+                        "nodes": graph_data["nodes"],
+                        "edges": graph_data["edges"]
+                    }))
+                    await websocket.send_text(json.dumps({
+                        "type": "project_loaded",
+                        "success": True,
+                        "message": f"Proiect încărcat cu {len(channels_set)} canale"
+                    }))
+                else:
+                    await websocket.send_text(json.dumps({
+                        "type": "project_loaded",
+                        "success": False,
+                        "message": "Eroare la încărcarea proiectului"
+                    }))
+
+            elif action == "export_project":
+                project_state = save_project_state()
+                await websocket.send_text(json.dumps({
+                    "type": "project_export",
+                    "data": project_state,
+                    "filename": f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tgm"
+                }))
+
+            elif action == "import_project":
+                project_data = cmd.get("data")
+                if project_data and load_project_state(project_data):
+                    await manager.send_state()
+                    G = build_graph()
+                    graph_data = await send_graph_update(websocket, G)
+                    await websocket.send_text(json.dumps({
+                        "type": "graph_update",
+                        "nodes": graph_data["nodes"],
+                        "edges": graph_data["edges"]
+                    }))
+                    await websocket.send_text(json.dumps({
+                        "type": "project_imported",
+                        "success": True
+                    }))
+                else:
+                    await websocket.send_text(json.dumps({
+                        "type": "project_imported",
+                        "success": False
+                    }))
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -844,18 +1522,10 @@ async def websocket_endpoint(websocket: WebSocket):
 # Background scraper
 # ─────────────────────────────────────────────
 async def background_scraper():
-    """
-    Scraper paralel cu actualizare progresiva a UI.
-    Marcheaza canalele modificate ca 'dirty' → analizatorul stie
-    exact ce perechi sa re-evalueze in ciclul urmator.
-    """
     global running, paused, channels_set, nodes_data
     global ch_msgs_cache, ch_embs_cache, ch_style_cache, dirty_channels
 
-    # Cu 204 canale si timeout 8s/canal, semaphore(5) = ~5 canale simultan.
-    # Anterior semaphore(10) nu ajuta: tot 20 batch-uri × 8s = 160s.
     semaphore = asyncio.Semaphore(5)
-    # Bug #2 fix: Adăugat BATCH_SIZE
     BATCH_SIZE = 20
 
     async def process_single_channel(ch: str):
@@ -864,7 +1534,6 @@ async def background_scraper():
                 return
             try:
                 await manager.broadcast(json.dumps({"type": "status", "msg": f"Scanez {ch}..."}))
-                # Timeout explicit per canal: nu blocam tot ciclul daca un canal e lent
                 data = await asyncio.wait_for(
                     asyncio.to_thread(scrape_channel, ch),
                     timeout=12.0
@@ -887,11 +1556,9 @@ async def background_scraper():
                 await manager.broadcast(json.dumps({"type": "node_update", "node": nodes_data[ch]}))
                 return
 
-            # Detectare limba si amprenta stilometrica pe setul complet
             ch_lang_cache[ch]  = detect_language(" ".join(msgs[:10]))
             ch_style_cache[ch] = await asyncio.to_thread(get_stylometric_fingerprint, msgs)
 
-            # Bug #6 fix: Verificăm dacă ch_msgs_set[ch] există
             existing_set = ch_msgs_set.get(ch)
             if existing_set is None:
                 existing_set = set()
@@ -904,29 +1571,19 @@ async def background_scraper():
             new_msgs = [m for m in filtered if m not in existing_set]
 
             if new_msgs:
-                # Actualizam cache-ul de text (fereastra glisanta de 50)
                 combined = (ch_msgs_cache.get(ch, []) + new_msgs)[-50:]
                 ch_msgs_cache[ch] = combined
-                # Mentinem setul paralel in sync
                 ch_msgs_set[ch] = set(combined)
 
-                # Encoding INCREMENTAL: doar mesajele noi sunt encodate
-                # Mesajele vechi din ch_embs_cache[ch]["matrix"] sunt refolosite ca atare
                 await asyncio.to_thread(update_embeddings_incremental, ch, new_msgs)
 
-                # Pre-warm NLP cache pentru mesajele noi (primele 5)
                 for m in new_msgs[:5]:
                     await asyncio.to_thread(analyse_text, m)
 
-                # Marcam canalul dirty: analizatorul va re-evalua toate perechile cu acest canal
                 dirty_channels.add(ch)
                 logger.info(f"[Scraper] {ch}: {len(new_msgs)} mesaje noi → dirty")
 
-            # Trimitem nodul actualizat in UI imediat dupa scrape
             await manager.broadcast(json.dumps({"type": "node_update", "node": nodes_data[ch]}))
-
-    # Bug #2 fix: nu lansam 204 taskuri simultan in gather.
-    # Impartim in batch-uri de BATCH_SIZE si procesam secvential.
 
     while running:
         if paused or not channels_set or not nlp_ready:
@@ -943,26 +1600,13 @@ async def background_scraper():
         await asyncio.sleep(10)
 
 # ─────────────────────────────────────────────
-# Background analyzer
+# Background analyzer - MODIFICAT pentru noile moduri
 # ─────────────────────────────────────────────
 async def background_analyzer():
-    """
-    Analizator global de similaritate cu evaluare selectiva bazata pe dirty tracking.
-
-    Ciclul de analiza:
-    1. Decay logaritmic pe TOATE edges existente (relatiile slabe dispar natural).
-    2. Re-evaluare SELECTIVA: recalculeaza doar perechile (c1, c2) unde cel putin
-       unul e in dirty_channels SAU perechea e noua (nu are inca un edge).
-       → Celelalte perechi supravietuiesc prin decay fara recalcul inutil.
-    3. Similaritatea e calculata GLOBAL pe intreaga matrice de embeddings —
-       fiecare mesaj din c1 e comparat cu fiecare mesaj din c2 (nu doar argmax).
-    4. Graful NetworkX e reconstruit si trimis complet in UI dupa fiecare ciclu.
-    """
     global running, paused, edges_data, posts_history, dirty_channels
     global channels_set, nodes_data, target_channel, similarity_mode
     global global_entities, nlp_ready, similarity_model, cosine_similarity
 
-    # Bug #3 fix: Adăugat MAX_PAIRS_PER_CYCLE
     MAX_PAIRS_PER_CYCLE = 300
 
     while running:
@@ -975,38 +1619,26 @@ async def background_analyzer():
             n_dirty = len(dirty_channels)
             await manager.broadcast(json.dumps({
                 "type": "status",
-                "msg":  f"Analiza globala: {n_ch} canale, {n_dirty} cu continut nou",
+                "msg":  f"Analiza globala: {n_ch} canale, {n_dirty} cu continut nou, mod: {similarity_mode}",
             }))
-            logger.info(f"[Analyzer] mod={similarity_mode} canale={n_ch} dirty={n_dirty}")
+            logger.info(f"[Analyzer] mod_similaritate={similarity_mode} canale={n_ch} dirty={n_dirty}")
 
-            # ── 1. Decay logaritmic pe edges existente ────────────────────
+            # Decay pentru toate muchiile existente
             for pair in list(edges_data.keys()):
                 edges_data[pair] = _decay_edge(edges_data[pair])
 
-            # ── 2. Re-evaluare selectiva ──────────────────────────────────
-            # Bug #9 fix: Filtrăm cheile valide din ch_embs_cache
             all_keys = [k for k in ch_embs_cache.keys() 
                         if ch_embs_cache[k] is not None 
                         and "matrix" in ch_embs_cache[k] 
                         and ch_embs_cache[k]["matrix"].shape[0] > 0]
-            threshold     = THRESHOLD.get(similarity_mode, 0.6)
+            threshold = THRESHOLD.get(analysis_mode, 0.6)  # folosim analysis_mode pentru prag
             current_dirty = set(dirty_channels)
 
-            # Bug #1 fix: force_new_pairs logic corectata.
-            # Dupa primul ciclu complet, toate perechile au edge si dirty=0 intre
-            # cicluri → analizatorul nu mai rula. Acum re-analizam si perechile
-            # cu edge slab (< 1.0) care ar putea fi consolidate sau eliminate.
             force_recheck = len(current_dirty) == 0 and len(edges_data) > 0
 
-            # Bug #3 fix: C(204,2) = 20706 perechi = prea mult pentru un singur ciclu.
-            # Limitam la MAX_PAIRS_PER_CYCLE perechi per ciclu, prioritizand:
-            # 1. Perechile dirty (cel mai important)
-            # 2. Perechile noi (fara edge)
-            # 3. Perechile cu edge slab (< 1.0) — candidati la eliminare/consolidare
-
+            # Selectarea perechilor pentru analiză directă
+            pairs_to_check = []
             if len(all_keys) >= 2:
-                # Construim lista de perechi prioritizata
-                pairs_to_check = []
                 for i, c1 in enumerate(all_keys):
                     for c2 in all_keys[i + 1:]:
                         pair        = tuple(sorted([c1, c2]))
@@ -1015,26 +1647,37 @@ async def background_analyzer():
                         is_weak     = edges_data.get(pair, 0.0) < 1.0
 
                         if is_affected:
-                            priority = 0   # cel mai urgent
+                            priority = 0
                         elif is_new_pair:
                             priority = 1
                         elif force_recheck and is_weak:
-                            priority = 2   # re-verifica relatii slabe
+                            priority = 2
                         else:
-                            continue       # sarim perechile stabile cu edge puternic
+                            continue
 
                         pairs_to_check.append((priority, pair, c1, c2))
 
-                # Sortam dupa prioritate si limitam numarul
                 pairs_to_check.sort(key=lambda x: x[0])
-                pairs_to_check = pairs_to_check[:MAX_PAIRS_PER_CYCLE]
+                
+                # Limităm numărul de perechi în funcție de mod
+                if similarity_mode == "direct":
+                    pairs_to_check = pairs_to_check[:MAX_PAIRS_PER_CYCLE]
+                elif similarity_mode == "hibrid":
+                    # În modul hibrid, folosim 70% pentru analiză directă
+                    direct_limit = int(MAX_PAIRS_PER_CYCLE * 0.7)
+                    pairs_to_check = pairs_to_check[:direct_limit]
+                elif similarity_mode == "tranzitiv":
+                    # În modul tranzitiv, folosim doar 50% pentru analiză directă
+                    direct_limit = int(MAX_PAIRS_PER_CYCLE * 0.5)
+                    pairs_to_check = pairs_to_check[:direct_limit]
 
+                # Analizăm perechile selectate
                 for _, pair, c1, c2 in pairs_to_check:
                     if not running:
                         break
 
                     edge_score, match = await asyncio.to_thread(
-                        _analyse_pair_global, c1, c2, similarity_mode, threshold
+                        _analyse_pair_global, c1, c2, analysis_mode, threshold
                     )
 
                     if edge_score > 0:
@@ -1050,15 +1693,29 @@ async def background_analyzer():
                                 json.dumps({"type": "new_post_match", "data": match})
                             )
 
-            # ── 3. Eliminam edges sub pragul minim ───────────────────────
+            # Aplicăm logica specifică modului ales
+            analyzed_pairs = len(pairs_to_check)
+            
+            if similarity_mode == "hibrid" and analyzed_pairs < MAX_PAIRS_PER_CYCLE * 0.7:
+                # În modul hibrid, completăm cu inferențe
+                remaining = MAX_PAIRS_PER_CYCLE - analyzed_pairs
+                if remaining > 10:
+                    await perform_hybrid_inference(min(remaining, 50))
+                    
+            elif similarity_mode == "tranzitiv":
+                # În modul tranzitiv, facem inferențe mai agresive
+                remaining = MAX_PAIRS_PER_CYCLE - analyzed_pairs
+                if remaining > 5:
+                    await perform_transitive_inference(min(remaining, 100))
+
+            # Eliminăm muchiile slabe
             dead = [p for p, s in edges_data.items() if s < 0.15]
             for p in dead:
                 edges_data.pop(p, None)
 
-            # ── 4. Consumam dirty_channels dupa procesare ─────────────────
             dirty_channels -= current_dirty
 
-            # ── 5. Construim graful NetworkX ──────────────────────────────
+            # Construim și trimitem graful actualizat
             G = nx.Graph()
             for (u, v), w in edges_data.items():
                 G.add_edge(u, v, weight=w)
@@ -1133,4 +1790,9 @@ async def background_analyzer():
 
 if __name__ == "__main__":
     import uvicorn
+    os.makedirs("backups", exist_ok=True)
+    
+    # Opțional: Rulează un backup automat la pornire
+    # full_backup()
+    
     uvicorn.run(app, host="0.0.0.0", port=8000)
