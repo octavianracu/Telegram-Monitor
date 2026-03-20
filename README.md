@@ -1,284 +1,209 @@
-Telegram Monitor este un instrument avansat de analiză și vizualizare a rețelelor de canale Telegram, care detectează automat relații de similaritate, repostări și pattern-uri stilometrice între canale. Sistemul rulează în timp real și oferă o interfață web interactivă pentru explorarea rețelei sociale descoperite.
+# TGM Monitor
 
-✨ Caracteristici Principale
-🎯 Analiză Multi-dimensională
-Repostări - Detectează canale care repostează același conținut (prag: 0.88)
+Instrument de monitorizare a coordonării narative între canale Telegram. Detectează canale care reacționează similar la aceleași evenimente, amplifică același conținut sau fac parte din rețele de distribuție indirectă — pe perioade de zile, nu de minute.
 
-Similaritate semantică - Identifică canale cu conținut ideologic similar folosind embeddings multilingve (prag: 0.72)
+---
 
-Stilometrie avansată - Recunoaște același autor după 18 dimensiuni stilistice de scriere (prag: 0.72)
+## Funcționalitate principală
 
-🧠 Procesare NLP de Ultimă Generație
-Modele încărcate asincron în background thread
+- **Scraping automat** al mesajelor din canale publice Telegram prin `t.me/s/{username}`
+- **Analiză semantică** cu embeddings multilinguale (`paraphrase-multilingual-mpnet-base-v2`) și similaritate cosinus
+- **NER + Sentiment** cu modele HuggingFace pentru entități (persoane, organizații) și tonalitate
+- **Trei moduri de similaritate:** Direct, Hibrid, Tranzitiv — fiecare cu logică de inferență diferită
+- **Persistență SQLite** — mesajele și scorurile cumulative supraviețuiesc repornirii serverului
+- **Graf interactiv** vizualizat în timp real prin WebSocket, cu detecție de comunități Louvain
+- **Fereastră glisantă de 3 zile** — analiza folosește numai mesajele recente, relevante pentru valul curent de știri
 
-Cache inteligent pentru embeddings și analize NLP
+---
 
-Procesare incrementală - doar mesajele noi sunt encodate
+## Arhitectură
 
-Suport multilingv complet (română, rusă, engleză)
+```
+tgm_monitor.db (SQLite)
+├── messages          — toate mesajele scrapate, cu timestamp
+└── edges_cumulative  — scoruri de coordonare acumulate pe toată durata monitorizării
 
-NER (Named Entity Recognition) pentru persoane și organizații
+RAM (volatil, se reface la repornire)
+├── edges_data        — scoruri de sesiune cu decay
+├── edges_type        — tipul fiecărei muchii (direct / inferred_hibrid / inferred_tranzitiv)
+├── ch_embs_cache     — embeddings reconstruite din fereastra de 3 zile
+└── ch_style_cache    — amprente stilometrice per canal
+```
 
-Analiză de sentiment per mesaj
+Graful Louvain pentru detecția comunităților se construiește **din `edges_cumulative`** (SQLite), nu din starea de sesiune. Comunitatea unui canal reflectă astfel istoricul complet al coordonării, nu doar ultimele 10 minute.
 
-📊 Vizualizare Interactivă în Timp Real
-Grafice de rețea dinamice cu librăria vis.js
+---
 
-Comunități detectate automat (algoritm Louvain)
+## Moduri de similaritate
 
-6 metrici de centralitate:
+| Mod | Ce detectează | Inferențe | Buget perechi/ciclu |
+|-----|--------------|-----------|---------------------|
+| **Direct** | Același subiect în fereastra de 3 zile, confirmat semantic | Niciuna | 300 (100%) |
+| **Hibrid** | Coordonare directă + relații inférate printr-un hub comun | ≤ 30 hibrid/ciclu | 210 (70%) |
+| **Tranzitiv** | Rețele de amplificare indirectă A→B→C, chiar dacă A și C nu se aseamănă direct | ≤ 50 tranzitiv/ciclu | 150 (50%) |
 
-Grad (degree)
+### Moduri de analiză
 
-Betweenness (punte)
+- **similar** — similaritate semantică generală (prag 0.72)
+- **repost** — conținut aproape identic / repost (prag 0.88)
+- **stylography** — amprentă stilometrică pe 18 dimensiuni (prag 0.72)
 
-Closeness (proximitate)
+---
 
-Eigenvector (influență)
+## Instalare
 
-PageRank (difuzie)
+### Cerințe
 
-Sistem de culori pentru comunități
+- Python 3.10+
+- ~4 GB RAM pentru modelele NLP la încărcare completă
+- Conexiune internet pentru scraping Telegram
 
-Tooltip-uri cu informații detaliate
+### Dependențe
 
-Panou de informații la click pe nod
+```bash
+pip install fastapi uvicorn[standard] requests beautifulsoup4 \
+            numpy networkx sentence-transformers transformers \
+            scikit-learn torch
+```
 
-⚡ Performanță Optimizată pentru Scenarii Reale
-Scraping paralel cu semafor (max 5 canale simultan)
+### Pornire
 
-Procesare în batch-uri de 20 canale pentru evitarea supraîncărcării
-
-Dirty tracking - reanalizează doar canalele modificate
-
-Decay logaritmic al relațiilor în timp (relațiile puternice persistă)
-
-Limitare la 300 perechi analizate per ciclu
-
-Timeout de 12 secunde per canal pentru scraping
-
-🎨 Interfață Modernă
-Design Cyberpunk cu temă întunecată
-
-Gradient și efecte de blur
-
-Animații fluide pentru notificări
-
-Butoane de navigare în graf:
-
-Zoom In/Out
-
-Fit to Screen
-
-Toggle Physics (oprește/pornește animația)
-
-Export Graph în JSON
-
-Reset View
-
-Filtrare canale în timp real
-
-Upload fișiere .txt cu liste de canale
-
-🏗️ Arhitectură
-text
-telegram-channel-analyzer/
-├── main.py                 # Aplicația principală FastAPI
-├── static/
-│   └── index.html         # Interfață web (SPA)
-├── requirements.txt       # Dependințe Python
-├── .gitignore             # Fișiere ignorate în Git
-└── README.md              # Documentație
-Componente Tehnice
-Componentă	Tehnologie	Rol
-Backend	FastAPI + WebSocket	Server și comunicare real-time
-Frontend	vis.js + vanilla JS	Vizualizare graf interactivă
-Embeddings	sentence-transformers	Similaritate semantică
-NLP	Hugging Face Transformers	NER și sentiment
-Analiză rețea	NetworkX	Algoritmi de comunități și centralitate
-Scraping	requests + BeautifulSoup4	Colectare date Telegram
-Matematică	NumPy + scikit-learn	Calcul similarități
-📦 Instalare
-Cerințe sistem
-Python 3.8 sau mai nou
-
-4GB RAM minim (recomandat 8GB)
-
-Conexiune internet pentru descărcarea modelelor
-
-Pași instalare
-bash
-# Clonează repository-ul
-git clone https://github.com/username/telegram-channel-analyzer.git
-cd telegram-channel-analyzer
-
-# Creează și activează virtual environment
-python -m venv venv
-
-# Linux/Mac
-source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
-
-# Instalează dependințele
-pip install -r requirements.txt
-
-# Pornește serverul
+```bash
 python main.py
-Serverul va rula la http://localhost:8000. Modelele NLP se vor descărca automat la prima pornire (1-2GB, poate dura câteva minute).
+```
 
-🎮 Utilizare
-Interfață Web
-Adaugă canale - Introdu nume de canale Telegram (cu sau fără @)
+Serverul pornește pe `http://0.0.0.0:8000`. La primul pornire se creează automat `tgm_monitor.db` în directorul curent.
 
-Selectează modul de analiză:
+---
 
-🔄 Repostări - pentru conținut identic
+## Utilizare
 
-🎯 Tematici & Ideologie - pentru similaritate semantică
+### Interfața web
 
-✍️ Stilografie - pentru același autor
+Accesează `http://localhost:8000` după pornire. Fișierele statice (HTML/JS/CSS) trebuie plasate în directorul `static/`.
 
-Pornește analiza - click START
+### API REST
 
-Explorează graful:
+| Endpoint | Metodă | Descriere |
+|----------|--------|-----------|
+| `/api/backup_now` | GET | Salvează backup JSON în `backups/` |
+| `/api/project/list` | GET | Listează proiectele `.tgm` salvate |
+| `/api/project/save` | POST | Salvează starea curentă ca proiect `.tgm` |
+| `/api/project/load` | POST | Încarcă un proiect `.tgm` existent |
+| `/api/project/delete` | DELETE | Șterge un proiect `.tgm` |
 
-Click pe nod pentru detalii
+### WebSocket
 
-Dublu-click pentru focus
+Conexiunea principală la `ws://localhost:8000/ws` acceptă comenzi JSON:
 
-Butoanele din dreapta sus pentru navigare
+```json
+{ "action": "add_channel",    "channel": "@exemplu" }
+{ "action": "remove_channel", "channel": "@exemplu" }
+{ "action": "set_target",     "channel": "@exemplu" }
+{ "action": "set_mode",       "mode": "hibrid" }
+{ "action": "set_mode",       "mode": "similar" }
+{ "action": "start" }
+{ "action": "stop" }
+{ "action": "pause" }
+{ "action": "reset" }
+{ "action": "full_backup" }
+{ "action": "save_request" }
+```
 
-Selectează metrica din dropdown
+Serverul emite events:
 
-Comenzi disponibile
-Buton	Acțiune
-START	Pornește analiza în timp real
-PAUZĂ	Suspendă analiza temporar
-STOP	Oprește analiza complet
-RESETARE	Șterge toate datele
-JSON	Exportă rețeaua în format JSON
-+ ADAUGĂ	Adaugă canal manual
-📁 .TXT	Încarcă listă de canale din fișier
-Navigare Graf
-Buton	Funcție
-➕	Apropie zoom
-➖	Depărtează zoom
-⬛	Potrivește în ecran
-⚙	Pornește/oprește fizica
-⬇	Exportă graful
-⟲	Resetează vederea
-📊 Dimensiuni Stilometrice
-Sistemul analizează 18 dimensiuni pentru detectarea autorului:
+```json
+{ "type": "state_update",    ... }
+{ "type": "graph_update",    "nodes": [...], "edges": [...] }
+{ "type": "new_post_match",  "data": { "ch1": "...", "ch2": "...", "score": 0.84 } }
+{ "type": "node_update",     "node": { "id": "...", "subscribers": 12000 } }
+{ "type": "status",          "msg": "Analiză: 203 canale, 42 dirty..." }
+```
 
-Suprafață textuală (pondere 0.5-1.5)
-Lungime medie mesaj
+---
 
-Densitate punctuație
+## Parametri cheie
 
-Densitate caractere speciale/emoji
+```python
+ANALYSIS_WINDOW_DAYS     = 3      # fereastra de mesaje analizate
+MAX_PAIRS_PER_CYCLE      = 300    # perechi analizate per ciclu de 10s
 
-Lungime medie cuvânt
-
-Ticuri de scriere (pondere 2.0)
-Rată ellipsis (...)
-
-Rată exclamații (!!)
-
-Rată întrebări (?)
-
-Lexic și vocabular (pondere 1.0)
-Type-token ratio (TTR)
-
-Rată hapax legomena
-
-Bogăție vocabular
-
-Rată stopwords
-
-Structură (pondere 1.0-1.5)
-Lungime medie propoziție
-
-Proporție propoziții scurte/lungi
-
-Variație lungime mesaje
-
-Densitate link-uri
-
-⚙️ Configurare Avansată
-Parametrii pot fi ajustați în main.py:
-
-python
-# Praguri similaritate
-THRESHOLD = {
-    "repost":      0.88,  # Prag pentru repostări
-    "similar":     0.72,  # Prag pentru similaritate semantică
-    "stylography": 0.72,  # Prag pentru stilometrie
+DECAY_BASE               = 0.95   # decay muchii directe (~45 cicluri durată de viață)
+DECAY_INFERRED           = {
+    "hibrid":    0.75,             # ~8 cicluri fără confirmare
+    "tranzitiv": 0.70,             # ~6 cicluri fără confirmare
 }
 
-# Performanță
-DECAY_BASE = 0.88        # Factor decay pentru relații
-BATCH_SIZE = 20          # Canale per batch la scraping
-MAX_PAIRS_PER_CYCLE = 300  # Perechi analizate per ciclu
-TIMEOUT = 12             # Timeout scraping per canal (secunde)
-🧪 Exemple de Utilizare
-Adăugare manuală canale
-bash
-# În interfață, introduceți:
-@stiri
-@news_ro
-@actualitate
-Încărcare fișier .txt
-txt
-stiri
-news_ro
-actualitate
-politic
-economie
-Export date
-json
-{
-  "channels": ["@stiri", "@news_ro"],
-  "edges": [
-    {"from": "@stiri", "to": "@news_ro", "strength": 0.92}
-  ],
-  "entities": {
-    "PER": {"Ion Popescu": {"count": 5, "sum": 3.2}},
-    "ORG": {"Guvern": {"count": 3, "sum": -1.5}}
-  }
-}
-🤝 Contribuții
-Contribuțiile sunt binevenite! Te rugăm să:
+INFERENCE_GRAPH_MIN_WEIGHT    = 0.72   # prag intrare graf inferențe hibrid
+TRANSITIVE_GRAPH_MIN_WEIGHT   = 0.65   # prag intrare graf inferențe tranzitive
+INFERRED_SCORE_PENALTY        = 0.65   # penalizare scor inferit hibrid
+TRANSITIVE_PENALTY_L2         = 0.50   # penalizare lanț de lungime 2
+TRANSITIVE_PENALTY_L3         = 0.35   # penalizare lanț de lungime 3
+```
 
-Fork the repository
+---
 
-Creează branch pentru feature (git checkout -b feature/amazing)
+## Persistență și backup
 
-Commit changes (git commit -m 'Add amazing feature')
+### SQLite (`tgm_monitor.db`)
 
-Push to branch (git push origin feature/amazing)
+Baza de date se creează automat la primul pornire și persistă între reporniri.
 
-Deschide Pull Request
+- `messages` — mesajele scrapate cu timestamp; curățate automat la 7 zile
+- `edges_cumulative` — scorurile totale de coordonare; **nu scad niciodată**
 
-Reguli de contribuție
-Păstrează stilul de cod existent
+### Backup manual
 
-Adaugă comentarii pentru funcții noi
+```bash
+curl http://localhost:8000/api/backup_now
+```
 
-Actualizează documentația
+Sau prin WebSocket: `{ "action": "full_backup" }` — salvează atât `.pkl` cât și `.json` în `backups/`.
 
-Testează înainte de PR
+### Proiecte `.tgm`
 
-🐛 Bug Reporting
-Pentru bug-uri, te rugăm să deschizi un issue cu:
+Fișiere JSON care salvează starea completă a unei sesiuni: lista de canale, configurație, noduri, muchii, istoricul de potriviri. Portabile între mașini.
 
-Descrierea problemei
+---
 
-Pași de reproducere
+## Scalabilitate
 
-Comportament așteptat vs. actual
+| Canale | Perechi totale | Cicluri pentru acoperire completă | Timp per rotație |
+|--------|---------------|----------------------------------|-----------------|
+| 100 | 4.950 | ~17 | ~2.8 min |
+| 203 | 20.503 | ~68 | ~11.3 min |
+| 300 | 44.850 | ~150 | ~25 min |
+| 500 | 124.750 | ~416 | ~69 min |
 
-Log-uri de eroare (dacă există)
+La 500+ canale, construirea listei O(N²) la fiecare ciclu și `betweenness_centrality` devin vizibile în latență. Se recomandă dezactivarea `betweenness_centrality` sau reducerea frecvenței la cicluri alternative.
 
-Versiuni software (Python, pachete)
+---
+
+## Modele NLP utilizate
+
+| Model | Sarcină | Dimensiune |
+|-------|---------|-----------|
+| `paraphrase-multilingual-mpnet-base-v2` | Embeddings semantice | ~420 MB |
+| `Babelscape/wikineural-multilingual-ner` | Recunoaștere entități (PER, ORG) | ~480 MB |
+| `lxyuan/distilbert-base-multilingual-cased-sentiments-student` | Clasificare sentiment | ~260 MB |
+
+Modelele sunt descărcate automat la primul pornire din HuggingFace Hub. Încărcarea durează 2–5 minute; scraping-ul pornește imediat, analiza NLP începe după ce modelele sunt gata.
+
+---
+
+## Structura proiectului
+
+```
+.
+├── main.py              — server principal (FastAPI + WebSocket + NLP + SQLite)
+├── tgm_monitor.db       — baza de date SQLite (creată automat)
+├── static/              — fișiere frontend (index.html, JS, CSS)
+├── projects/            — proiecte .tgm salvate
+└── backups/             — backup-uri automate și manuale
+```
+
+---
+
+## Licență
+
+Proiect privat. Utilizare exclusivă în scopuri de cercetare și monitorizare media.
