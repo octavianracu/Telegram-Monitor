@@ -3,11 +3,12 @@ import json
 import re
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import pickle
 import hashlib
 import glob
+import sqlite3
 
 import requests
 from bs4 import BeautifulSoup
@@ -277,9 +278,168 @@ INFERENCE_GRAPH_MIN_WEIGHT = 0.72   # FIX: era 0.5 — principala cauză a hub-u
 INFERRED_SCORE_PENALTY = 0.65   # FIX: era 1.3 (amplificare!) — acum penalizăm
 
 NLP_ALIGNMENT_MIN = 0.3
-DECAY_BASE        = 0.88
-# FIX: decay mai agresiv pentru muchii inférate
-DECAY_INFERRED    = 0.75   # FIX: nou — muchiile inférate pier mai repede dacă nu sunt confirmate
+# FIX: 0.88 → 0.95 pentru muchii directe — la 0.88 o muchie confirmată murea în ~13 cicluri
+# (~2 min), mai repede decât round-robin-ul (68 cicluri, ~11 min) o putea reconfirma.
+# La 0.95 durata de viață crește la ~45 cicluri (~7.5 min), permițând grafului să acumuleze
+# muchii stabile și comunităților Louvain să convergă în loc să oscileze.
+DECAY_BASE        = 0.95
+# Decay agresiv pentru muchii inférate — rămâne 0.75, inferențele greșite
+# dispar rapid dacă nu sunt confirmate semantic direct.
+DECAY_INFERRED    = 0.75
+
+# ─────────────────────────────────────────────
+# SQLite — persistență mesaje + scoruri cumulative
+# ─────────────────────────────────────────────
+DB_PATH             = "tgm_monitor.db"
+# Fereastra de analiză: doar mesajele din ultimele 3 zile intră în embeddings.
+# Captează reacțiile la același val de știri fără a acumula conținut expirat.
+ANALYSIS_WINDOW_DAYS = 3
+
+_db_lock = threading.Lock()
+
+
+def db_connect() -> sqlite3.Connection:
+    """Returnează o conexiune SQLite cu WAL mode pentru scrieri concurente sigure."""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+def db_init():
+    """
+    Creează schema SQLite la primul pornire.
+    Tabelul messages stochează fiecare mesaj cu timestamp ISO pentru filtrare
+    pe fereastra glisantă de 3 zile.
+    Tabelul edges_cumulative stochează scorul total pe toată durata monitorizării —
+    nu scade niciodată, nu e afectat de decay-ul din RAM.
+    """
+    with _db_lock:
+        conn = db_connect()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel   TEXT    NOT NULL,
+                text      TEXT    NOT NULL,
+                ts        TEXT    NOT NULL,
+                UNIQUE(channel, text)
+            );
+            CREATE INDEX IF NOT EXISTS idx_messages_channel_ts
+                ON messages(channel, ts);
+
+            CREATE TABLE IF NOT EXISTS edges_cumulative (
+                ch1         TEXT NOT NULL,
+                ch2         TEXT NOT NULL,
+                score_total REAL NOT NULL DEFAULT 0.0,
+                hits        INTEGER NOT NULL DEFAULT 0,
+                first_seen  TEXT NOT NULL,
+                last_seen   TEXT NOT NULL,
+                PRIMARY KEY (ch1, ch2)
+            );
+        """)
+        conn.commit()
+        conn.close()
+    logger.info(f"[DB] Schema inițializată: {DB_PATH}")
+
+
+def db_insert_messages(channel: str, texts: list):
+    """
+    Inserează mesajele noi cu timestamp curent.
+    IGNORE pe conflictul UNIQUE evită duplicatele fără excepții.
+    """
+    if not texts:
+        return
+    now = datetime.now().isoformat()
+    with _db_lock:
+        conn = db_connect()
+        conn.executemany(
+            "INSERT OR IGNORE INTO messages(channel, text, ts) VALUES (?, ?, ?)",
+            [(channel, t, now) for t in texts],
+        )
+        conn.commit()
+        conn.close()
+
+
+def db_get_recent_messages(channel: str, days: int = ANALYSIS_WINDOW_DAYS) -> list:
+    """
+    Returnează mesajele canalului din ultimele `days` zile.
+    Aceasta este fereastra glisantă: la 50+ msg/zi, un canal poate avea
+    150–500 de mesaje în fereastră — mult mai relevant decât ultimele 50 indiferent de dată.
+    """
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    with _db_lock:
+        conn = db_connect()
+        rows = conn.execute(
+            "SELECT text FROM messages WHERE channel=? AND ts>=? ORDER BY ts ASC",
+            (channel, cutoff),
+        ).fetchall()
+        conn.close()
+    return [r[0] for r in rows]
+
+
+def db_get_all_messages_set(channel: str) -> set:
+    """Set complet de texte pentru deduplicare rapidă (indiferent de dată)."""
+    with _db_lock:
+        conn = db_connect()
+        rows = conn.execute(
+            "SELECT text FROM messages WHERE channel=?", (channel,)
+        ).fetchall()
+        conn.close()
+    return {r[0] for r in rows}
+
+
+def db_update_edge_cumulative(ch1: str, ch2: str, score_delta: float):
+    """
+    Adaugă score_delta la scorul cumulativ al perechii (ch1, ch2).
+    Scorul cumulativ nu scade niciodată — reflectă întreaga istorie a
+    coordonării detectate între cele două canale pe durata monitorizării.
+    ch1 < ch2 garantat de tuple(sorted(...)) înainte de apel.
+    """
+    now = datetime.now().isoformat()
+    with _db_lock:
+        conn = db_connect()
+        conn.execute("""
+            INSERT INTO edges_cumulative(ch1, ch2, score_total, hits, first_seen, last_seen)
+            VALUES (?, ?, ?, 1, ?, ?)
+            ON CONFLICT(ch1, ch2) DO UPDATE SET
+                score_total = score_total + excluded.score_total,
+                hits        = hits + 1,
+                last_seen   = excluded.last_seen
+        """, (ch1, ch2, score_delta, now, now))
+        conn.commit()
+        conn.close()
+
+
+def db_get_cumulative_scores() -> dict:
+    """
+    Returnează dicționarul {(ch1, ch2): score_total} pentru toate perechile cunoscute.
+    Folosit la construirea grafului Louvain — graful cumulativ e stabil și convergent.
+    """
+    with _db_lock:
+        conn = db_connect()
+        rows = conn.execute(
+            "SELECT ch1, ch2, score_total FROM edges_cumulative WHERE score_total > 0"
+        ).fetchall()
+        conn.close()
+    return {(r[0], r[1]): r[2] for r in rows}
+
+
+def db_purge_old_messages(days: int = 7):
+    """
+    Curăță mesajele mai vechi de `days` zile pentru a limita creșterea DB.
+    Apelat automat la fiecare 24h din scraper.
+    Fereastra de analiză e 3 zile, dar păstrăm 7 pentru auditul manual.
+    """
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    with _db_lock:
+        conn = db_connect()
+        deleted = conn.execute(
+            "DELETE FROM messages WHERE ts < ?", (cutoff,)
+        ).rowcount
+        conn.commit()
+        conn.close()
+    if deleted:
+        logger.info(f"[DB] Curățat {deleted} mesaje mai vechi de {days} zile")
 
 
 # ─────────────────────────────────────────────
@@ -526,7 +686,9 @@ async def send_graph_update(websocket, G):
     try:
         from networkx.algorithms.community import louvain_communities
         if G.size() > 0:
-            for idx, s in enumerate(louvain_communities(G, weight="weight")):
+            # FIX: seed=42 elimină nedeterminismul Louvain — numărul de comunități
+            # nu mai oscilează între cicluri când graful este identic sau aproape identic.
+            for idx, s in enumerate(louvain_communities(G, weight="weight", seed=42)):
                 for n in s:
                     comms[n] = idx
     except Exception as e:
@@ -811,32 +973,27 @@ def scrape_channel(username: str) -> dict:
 
 
 # ─────────────────────────────────────────────
-# Embeddings incrementale
+# Embeddings pe fereastră glisantă de 3 zile
 # ─────────────────────────────────────────────
 def update_embeddings_incremental(ch: str, new_texts: list):
+    """
+    Recalculează embeddings-urile canalului pe fereastra glisantă de ANALYSIS_WINDOW_DAYS zile.
+    La 50+ msg/zi, fereastra conține 150–500 de mesaje — mult mai reprezentativ
+    decât ultimele 50 indiferent de dată.
+    Embeddings-urile sunt păstrate în RAM (ch_embs_cache) pentru viteză,
+    dar sursa de adevăr este SQLite.
+    """
     if not new_texts or similarity_model is None:
         return
-    clean_new   = [clean_text(t) for t in new_texts]
-    valid_pairs = [(orig, cl) for orig, cl in zip(new_texts, clean_new) if len(cl) > 10]
-    if not valid_pairs:
+    recent_texts = db_get_recent_messages(ch, days=ANALYSIS_WINDOW_DAYS)
+    if not recent_texts:
         return
-    orig_valid  = [p[0] for p in valid_pairs]
-    clean_valid = [p[1] for p in valid_pairs]
-    new_embs    = similarity_model.encode(clean_valid, show_progress_bar=False)
-
-    if ch not in ch_embs_cache or ch_embs_cache[ch] is None:
-        ch_embs_cache[ch] = {"orig_texts": orig_valid, "matrix": new_embs}
-    else:
-        existing = ch_embs_cache[ch]
-        if "orig_texts" not in existing or "matrix" not in existing:
-            ch_embs_cache[ch] = {"orig_texts": orig_valid, "matrix": new_embs}
-        else:
-            combined_orig   = existing["orig_texts"] + orig_valid
-            combined_matrix = np.vstack([existing["matrix"], new_embs])
-            if len(combined_orig) > 50:
-                combined_orig   = combined_orig[-50:]
-                combined_matrix = combined_matrix[-50:]
-            ch_embs_cache[ch] = {"orig_texts": combined_orig, "matrix": combined_matrix}
+    clean_texts = [clean_text(t) for t in recent_texts if len(clean_text(t)) > 10]
+    if not clean_texts:
+        return
+    orig_valid = [t for t in recent_texts if len(clean_text(t)) > 10]
+    matrix     = similarity_model.encode(clean_texts, show_progress_bar=False)
+    ch_embs_cache[ch] = {"orig_texts": orig_valid, "matrix": matrix}
 
 
 def get_embedding_matrix(ch: str):
@@ -853,7 +1010,7 @@ def _decay_edge(pair: tuple, strength: float) -> float:
     """
     FIX: decay diferențiat în funcție de tipul muchiei.
     Muchiile inférate decad mai rapid (DECAY_INFERRED = 0.75) decât
-    cele directe (DECAY_BASE = 0.88). Astfel, o inferență greșită
+    cele directe (DECAY_BASE = 0.95). Astfel, o inferență greșită
     dispare din graf în câteva cicluri dacă nu este confirmată semantic.
     """
     etype      = edges_type.get(pair, "direct")
@@ -1296,6 +1453,7 @@ manager = ConnectionManager()
 @app.on_event("startup")
 async def startup_event():
     logger.info("Pornire aplicație — inițiere încărcare modele NLP.")
+    db_init()
     loop = asyncio.get_running_loop()
     start_nlp_loading(loop)
 
@@ -1624,10 +1782,8 @@ async def background_scraper():
             ch_lang_cache[ch]  = detect_language(" ".join(msgs[:10]))
             ch_style_cache[ch] = await asyncio.to_thread(get_stylometric_fingerprint, msgs)
 
-            existing_set = ch_msgs_set.get(ch)
-            if existing_set is None:
-                existing_set = set()
-                ch_msgs_set[ch] = existing_set
+            # Deduplicare față de tot istoricul din SQLite (nu doar ultimele 50 din RAM)
+            existing_set = await asyncio.to_thread(db_get_all_messages_set, ch)
 
             filtered = (
                 [m for m in msgs if text_matches_keywords(m, keywords_list)]
@@ -1636,9 +1792,9 @@ async def background_scraper():
             new_msgs = [m for m in filtered if m not in existing_set]
 
             if new_msgs:
-                combined        = (ch_msgs_cache.get(ch, []) + new_msgs)[-50:]
-                ch_msgs_cache[ch] = combined
-                ch_msgs_set[ch]   = set(combined)
+                # Persistăm în SQLite cu timestamp — sursa de adevăr pentru fereastra de 3 zile
+                await asyncio.to_thread(db_insert_messages, ch, new_msgs)
+                # Rebuilding embeddings din fereastra glisantă (3 zile din SQLite)
                 await asyncio.to_thread(update_embeddings_incremental, ch, new_msgs)
                 # BUG 3 FIX: analyse_text folosește ner_pipeline și sentiment_pipeline
                 # care sunt None până când nlp_ready devine True. Fără această
@@ -1651,6 +1807,8 @@ async def background_scraper():
 
             await manager.broadcast(safe_json_dumps({"type": "node_update", "node": nodes_data[ch]}))
 
+    _last_purge = datetime.now()
+
     while running:
         # BUG 1 FIX: scraper-ul NU are nevoie de nlp_ready — modelele NLP
         # sunt folosite doar de analyzer. Condiția anterioară bloca complet
@@ -1658,6 +1816,12 @@ async def background_scraper():
         if paused or not channels_set:
             await asyncio.sleep(2)
             continue
+
+        # Curățăm mesajele vechi din SQLite o dată la 24h
+        if (datetime.now() - _last_purge).total_seconds() > 86400:
+            await asyncio.to_thread(db_purge_old_messages, 7)
+            _last_purge = datetime.now()
+
         ch_list = list(channels_set)
         for start in range(0, len(ch_list), BATCH_SIZE):
             if not running or paused:
@@ -1781,6 +1945,10 @@ async def background_analyzer():
                     existing = edges_data.get(pair, 0.0)
                     edges_data[pair] = min(existing + edge_score, 10.0)
                     edges_type[pair] = "direct"
+                    # Persistăm scorul în SQLite — scorul cumulativ nu scade niciodată,
+                    # reflectă întreaga istorie a coordonării pe durata monitorizării.
+                    ch1, ch2 = pair
+                    await asyncio.to_thread(db_update_edge_cumulative, ch1, ch2, edge_score)
                     if match:
                         match["time"] = datetime.now().strftime("%H:%M:%S")
                         posts_history.append(match)
@@ -1810,10 +1978,15 @@ async def background_analyzer():
 
             dirty_channels -= current_dirty
 
-            # Construim graful și trimitem update
+            # ── Construim graful pe scoruri cumulative din SQLite ──────────────
+            # Graful pentru Louvain folosește scorurile cumulative (nu decay-ul din RAM)
+            # pentru că scopul este detectarea coordonării pe termen lung (zile).
+            # edges_data (RAM, cu decay) rămâne pentru logica de prioritizare a perechilor.
+            cumulative_scores = await asyncio.to_thread(db_get_cumulative_scores)
             G = nx.Graph()
-            for (u, v), w in edges_data.items():
-                G.add_edge(u, v, weight=w)
+            for (u, v), w in cumulative_scores.items():
+                if u in channels_set and v in channels_set:
+                    G.add_edge(u, v, weight=w)
             for c in list(channels_set):
                 if c not in G:
                     G.add_node(c)
@@ -1822,7 +1995,9 @@ async def background_analyzer():
             try:
                 from networkx.algorithms.community import louvain_communities
                 if G.size() > 0:
-                    for idx, s in enumerate(louvain_communities(G, weight="weight")):
+                    # FIX: seed=42 elimină nedeterminismul Louvain — numărul de comunități
+                    # nu mai oscilează între cicluri când graful este identic sau aproape identic.
+                    for idx, s in enumerate(louvain_communities(G, weight="weight", seed=42)):
                         for n in s:
                             comms[n] = idx
             except Exception as e:
@@ -1868,12 +2043,14 @@ async def background_analyzer():
             f_edges = []
             for k, v in edges_data.items():
                 if k[0] in displayed and k[1] in displayed:
-                    etype = edges_type.get(k, "direct")
+                    etype    = edges_type.get(k, "direct")
+                    cum_score = cumulative_scores.get(k, cumulative_scores.get((k[1], k[0]), 0.0))
                     f_edges.append({
                         "from":  k[0],
                         "to":    k[1],
-                        "value": round(v, 3),
-                        "title": f"Forta: {v:.2f} ({'inferată' if etype == 'inferred' else 'directă'})",
+                        "value": round(cum_score if cum_score > 0 else v, 3),
+                        "title": (f"Sesiune: {v:.2f} | Cumulativ: {cum_score:.2f} "
+                                  f"({'inferată' if etype == 'inferred' else 'directă'})"),
                         "type":  etype,
                     })
 
