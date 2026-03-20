@@ -1318,11 +1318,22 @@
                 console.log("WS CONNECTED");
                 document.getElementById('status-text').innerText = 'CONECTAT';
                 document.getElementById('status-dot').className = 'status-dot';
-                // BUG 5 FIX: setRegime/setMode apelau sendCommand() înainte ca WS să fie deschis
-                // → comenzile se pierdeau cu "WebSocket not connected"
-                // Acum le trimitem abia după ce conexiunea e confirmată deschisă
                 sendCommand('set_mode', { mode: currentRegime });
                 sendCommand('set_mode', { mode: currentAnalysisMode });
+                // Polling REST imediat după (re)conectare — sincronizează starea NLP
+                // indiferent dacă broadcast-ul a fost ratat în timpul reconectării.
+                fetch('/api/nlp_status')
+                    .then(r => r.json())
+                    .then(data => {
+                        lastState.nlp_ready  = data.nlp_ready;
+                        lastState.nlp_status = data.nlp_status;
+                        const nlpStatus = document.getElementById('nlp-header-status');
+                        if (nlpStatus) {
+                            nlpStatus.innerText = data.nlp_ready ? 'NLP: READY' : 'NLP: ÎNCĂRCARE';
+                            nlpStatus.style.color = data.nlp_ready ? 'var(--secondary)' : '#f59e0b';
+                        }
+                    })
+                    .catch(() => {});
             };
 
             ws.onmessage = (event) => {
@@ -1335,6 +1346,15 @@
                         return;
                     }
                     if (msg.type === "state_update") updateUI(msg);
+                    else if (msg.type === "nlp_status_update") {
+                        lastState.nlp_ready  = msg.nlp_ready;
+                        lastState.nlp_status = msg.nlp_status;
+                        const nlpStatus = document.getElementById('nlp-header-status');
+                        if (nlpStatus) {
+                            nlpStatus.innerText = msg.nlp_ready ? 'NLP: READY' : 'NLP: ÎNCĂRCARE';
+                            nlpStatus.style.color = msg.nlp_ready ? 'var(--secondary)' : '#f59e0b';
+                        }
+                    }
                     else if (msg.type === "clear_graph") resetLocalUI();
                     else if (msg.type === "node_update") {
                         if (msg.node) {

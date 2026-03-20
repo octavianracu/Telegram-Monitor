@@ -1,0 +1,23 @@
+services:
+  tgm-monitor:
+    build: .
+    container_name: tgm-monitor
+    ports:
+      - "127.0.0.1:8000:8000"   # legat strict pe localhost — nu expus în rețea
+    volumes:
+      # Date persistente — supraviețuiesc la `docker compose down`
+      - tgm-db:/app/tgm_monitor.db       # SQLite cu mesaje + scoruri cumulative
+      - tgm-projects:/app/projects        # proiecte .tgm salvate
+      - tgm-backups:/app/backups          # backup-uri JSON și PKL
+      # Cache modele HuggingFace — evită re-descărcarea la recrearea containerului
+      - hf-cache:/root/.cache/huggingface
+    restart: unless-stopped
+    # Limite RAM — modelele NLP ocupă ~2.5 GB la runtime
+    mem_limit: 4g
+    memswap_limit: 4g
+
+volumes:
+  tgm-db:
+  tgm-projects:
+  tgm-backups:
+  hf-cache:

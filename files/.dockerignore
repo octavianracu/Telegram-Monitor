@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.env
+.venv
+venv/
+
+# Date locale — nu intră în imagine, sunt gestionate de volume
+tgm_monitor.db
+projects/
+backups/
+
+# Cache HuggingFace local
+.cache/
+
+# Fișiere editor și OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

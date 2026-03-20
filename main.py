@@ -61,6 +61,47 @@ app = FastAPI()
 # ─────────────────────────────────────────────
 # Backup endpoint
 # ─────────────────────────────────────────────
+@app.get("/api/nlp_status")
+async def get_nlp_status():
+    """
+    Endpoint REST pentru polling starea NLP din UI.
+    Fallback când clientul WebSocket ratează notify-ul de la _load_nlp_models
+    (ex. reconectare, tab în background).
+    """
+    return {"nlp_ready": nlp_ready, "nlp_status": nlp_status}
+
+
+@app.get("/api/narratives")
+async def get_narratives():
+    """
+    Returnează temele narative descoperite de BERTopic și profilul fiecărui canal.
+    Folosit de UI pentru a afișa ce narativ promovează fiecare canal și comunitate.
+
+    Răspuns:
+    {
+      "topics": [{"topic_id": 0, "keywords": ["moldova", "alegeri", ...], "size": 12}],
+      "channels": {"@canal": {"dominant_topic": 0, "topic_distribution": {"0": 0.8, "1": 0.2}}},
+      "last_run": "2024-01-15T14:30:00",
+      "total_channels_profiled": 198
+    }
+    """
+    profiles = await asyncio.to_thread(db_get_all_narrative_profiles)
+    topics   = await asyncio.to_thread(db_get_latest_topics)
+    channels_out = {
+        ch: {
+            "dominant_topic":     data["dominant_topic"],
+            "topic_distribution": data["topic_distribution"],
+        }
+        for ch, data in profiles.items()
+    }
+    return {
+        "topics":                   topics,
+        "channels":                 channels_out,
+        "last_run":                 _last_narrative_run.isoformat() if _last_narrative_run else None,
+        "total_channels_profiled":  len(profiles),
+    }
+
+
 @app.get("/api/backup_now")
 async def backup_now():
     try:
@@ -83,7 +124,7 @@ async def backup_now():
             },
         }
         with open(filename, "w", encoding="utf-8") as f:
-            json.dump(backup_data, f, ensure_ascii=False, indent=2)
+            json.dump(backup_data, f, cls=NumpyEncoder, ensure_ascii=False, indent=2)
         logger.info(f"✅ Backup creat: {filename}")
         return {"success": True, "message": f"Backup salvat: {filename}",
                 "filename": filename, "stats": backup_data["stats"]}
@@ -345,6 +386,43 @@ def db_init():
                 last_seen   TEXT NOT NULL,
                 PRIMARY KEY (ch1, ch2)
             );
+
+            -- Vectorul mediu de embeddings per canal per zi (medie aritmetică a
+            -- tuturor mesajelor scraped în ziua respectivă). Stocăm ca JSON array
+            -- pentru compatibilitate cu SQLite fără extensii numpy.
+            CREATE TABLE IF NOT EXISTS channel_daily_embeddings (
+                channel   TEXT NOT NULL,
+                day       TEXT NOT NULL,
+                embedding TEXT NOT NULL,
+                msg_count INTEGER NOT NULL DEFAULT 0,
+                updated   TEXT NOT NULL,
+                PRIMARY KEY (channel, day)
+            );
+
+            -- Profilul narativ al canalului: media mobilă exponențială (EMA) pe 7 zile
+            -- a embedding-urilor zilnice. Stabil, rezistent la variații de o zi.
+            -- topic_distribution = JSON {topic_id: weight} după ce BERTopic rulează.
+            CREATE TABLE IF NOT EXISTS channel_narrative_profile (
+                channel            TEXT PRIMARY KEY,
+                ema_embedding      TEXT NOT NULL,
+                topic_distribution TEXT NOT NULL DEFAULT '{}',
+                dominant_topic     INTEGER NOT NULL DEFAULT -1,
+                last_updated       TEXT NOT NULL
+            );
+
+            -- Temele narative descoperite de BERTopic.
+            -- keywords = JSON list cu cuvintele cheie ale temei.
+            -- run_id = timestamp al rulării — permitem mai multe rulări istorice.
+            CREATE TABLE IF NOT EXISTS narrative_topics (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id      TEXT NOT NULL,
+                topic_id    INTEGER NOT NULL,
+                keywords    TEXT NOT NULL,
+                size        INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_topics_run
+                ON narrative_topics(run_id, topic_id);
         """)
         conn.commit()
         conn.close()
@@ -452,6 +530,364 @@ def db_purge_old_messages(days: int = 7):
 
 
 # ─────────────────────────────────────────────
+# Profil narativ — embedding zilnic + EMA 7 zile
+# ─────────────────────────────────────────────
+
+def db_update_daily_embedding(channel: str, day: str, embedding: np.ndarray, msg_count: int):
+    """
+    Salvează / actualizează vectorul mediu de embeddings al canalului pentru ziua `day`.
+    Dacă există deja o intrare pentru (channel, day), actualizează cu media ponderată
+    față de numărul de mesaje — permite actualizări incrementale în cursul zilei.
+    """
+    now = datetime.now().isoformat()
+    emb_json = json.dumps(embedding.tolist())
+    with _db_lock:
+        conn = db_connect()
+        existing = conn.execute(
+            "SELECT embedding, msg_count FROM channel_daily_embeddings WHERE channel=? AND day=?",
+            (channel, day),
+        ).fetchone()
+        if existing:
+            prev_emb   = np.array(json.loads(existing[0]))
+            prev_count = existing[1]
+            total      = prev_count + msg_count
+            merged     = (prev_emb * prev_count + embedding * msg_count) / total
+            conn.execute(
+                """UPDATE channel_daily_embeddings
+                   SET embedding=?, msg_count=?, updated=?
+                   WHERE channel=? AND day=?""",
+                (json.dumps(merged.tolist()), total, now, channel, day),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO channel_daily_embeddings(channel, day, embedding, msg_count, updated)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (channel, day, emb_json, msg_count, now),
+            )
+        conn.commit()
+        conn.close()
+
+
+def db_get_daily_embeddings(channel: str, days: int = 7) -> list:
+    """
+    Returnează lista de (day, embedding_np) pentru canal, din ultimele `days` zile.
+    Ordonate cronologic — necesare pentru calculul EMA.
+    """
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    with _db_lock:
+        conn = db_connect()
+        rows = conn.execute(
+            """SELECT day, embedding FROM channel_daily_embeddings
+               WHERE channel=? AND day>=? ORDER BY day ASC""",
+            (channel, cutoff),
+        ).fetchall()
+        conn.close()
+    return [(r[0], np.array(json.loads(r[1]))) for r in rows]
+
+
+def db_update_narrative_profile(channel: str, ema_emb: np.ndarray):
+    """
+    Salvează profilul narativ EMA al canalului.
+    topic_distribution și dominant_topic sunt actualizate separat de BERTopic.
+    """
+    now = datetime.now().isoformat()
+    with _db_lock:
+        conn = db_connect()
+        conn.execute(
+            """INSERT INTO channel_narrative_profile
+               (channel, ema_embedding, topic_distribution, dominant_topic, last_updated)
+               VALUES (?, ?, '{}', -1, ?)
+               ON CONFLICT(channel) DO UPDATE SET
+                   ema_embedding=excluded.ema_embedding,
+                   last_updated=excluded.last_updated""",
+            (channel, json.dumps(ema_emb.tolist()), now),
+        )
+        conn.commit()
+        conn.close()
+
+
+def db_get_all_narrative_profiles() -> dict:
+    """
+    Returnează {channel: ema_embedding_np} pentru toate canalele cu profil calculat.
+    Folosit de BERTopic și de graful narativ.
+    """
+    with _db_lock:
+        conn = db_connect()
+        rows = conn.execute(
+            "SELECT channel, ema_embedding, topic_distribution, dominant_topic FROM channel_narrative_profile"
+        ).fetchall()
+        conn.close()
+    result = {}
+    for ch, emb_json, topic_json, dominant in rows:
+        result[ch] = {
+            "embedding":          np.array(json.loads(emb_json)),
+            "topic_distribution": json.loads(topic_json),
+            "dominant_topic":     dominant,
+        }
+    return result
+
+
+def db_save_topics(run_id: str, topics: list):
+    """
+    Salvează temele descoperite de BERTopic.
+    topics = [{"topic_id": int, "keywords": [str], "size": int}]
+    """
+    now = datetime.now().isoformat()
+    with _db_lock:
+        conn = db_connect()
+        conn.executemany(
+            """INSERT INTO narrative_topics(run_id, topic_id, keywords, size, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            [(run_id, t["topic_id"], json.dumps(t["keywords"]), t["size"], now) for t in topics],
+        )
+        conn.commit()
+        conn.close()
+
+
+def db_update_channel_topics(channel_topics: dict, run_id: str):
+    """
+    Actualizează topic_distribution și dominant_topic pentru fiecare canal.
+    channel_topics = {channel: {"distribution": {topic_id: weight}, "dominant": topic_id}}
+    """
+    now = datetime.now().isoformat()
+    with _db_lock:
+        conn = db_connect()
+        for ch, data in channel_topics.items():
+            conn.execute(
+                """UPDATE channel_narrative_profile
+                   SET topic_distribution=?, dominant_topic=?, last_updated=?
+                   WHERE channel=?""",
+                (json.dumps(data["distribution"]), data["dominant"], now, ch),
+            )
+        conn.commit()
+        conn.close()
+
+
+def db_get_latest_topics() -> list:
+    """Returnează temele din ultima rulare BERTopic."""
+    with _db_lock:
+        conn = db_connect()
+        row = conn.execute(
+            "SELECT run_id FROM narrative_topics ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            conn.close()
+            return []
+        run_id = row[0]
+        rows = conn.execute(
+            "SELECT topic_id, keywords, size FROM narrative_topics WHERE run_id=? ORDER BY size DESC",
+            (run_id,),
+        ).fetchall()
+        conn.close()
+    return [{"topic_id": r[0], "keywords": json.loads(r[1]), "size": r[2]} for r in rows]
+
+
+def compute_channel_ema(channel: str, alpha: float = 0.3) -> np.ndarray | None:
+    """
+    Calculează EMA (medie mobilă exponențială) pe embedding-urile zilnice ale canalului.
+    alpha=0.3 → zilele recente contează mai mult, dar schimbările bruște sunt amortizate.
+    Fereastra: ultimele 7 zile.
+    Returnează None dacă nu există date suficiente (< 2 zile).
+    """
+    daily = db_get_daily_embeddings(channel, days=7)
+    if len(daily) < 2:
+        return None
+    ema = daily[0][1].copy()
+    for _, emb in daily[1:]:
+        ema = alpha * emb + (1 - alpha) * ema
+    return ema
+
+
+def update_narrative_profile_for_channel(channel: str):
+    """
+    Recalculează profilul narativ EMA pentru un canal și îl salvează în DB.
+    Apelat din scraper după ce mesajele noi au fost procesate.
+    Necesită similarity_model — nu rulează dacă modelele NLP nu sunt gata.
+    """
+    if similarity_model is None or not nlp_ready:
+        return
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        recent = db_get_recent_messages(channel, days=1)
+        if not recent:
+            return
+        clean = [clean_text(t) for t in recent if len(clean_text(t)) > 10]
+        if not clean:
+            return
+        embs   = similarity_model.encode(clean, show_progress_bar=False)
+        day_emb = embs.mean(axis=0)
+        db_update_daily_embedding(channel, today, day_emb, len(clean))
+        ema = compute_channel_ema(channel)
+        if ema is not None:
+            db_update_narrative_profile(channel, ema)
+    except Exception as e:
+        logger.warning(f"[Narrative] Profil eșuat {channel}: {e}")
+
+
+# ─────────────────────────────────────────────
+# BERTopic — clustering narativ săptămânal
+# ─────────────────────────────────────────────
+
+# Starea globală a temelor narative — actualizată de run_narrative_clustering
+narrative_topics_cache: list = []       # [{"topic_id": int, "keywords": [...], "size": int}]
+narrative_profiles_cache: dict = {}     # {channel: {"dominant_topic": int, "distribution": {...}}}
+_last_narrative_run: datetime | None = None
+NARRATIVE_RUN_INTERVAL_HOURS = 24       # rulează o dată pe zi
+
+
+def run_narrative_clustering():
+    """
+    Rulează BERTopic pe profilurile EMA ale tuturor canalelor.
+    Descoperă automat temele narative dominante și atribuie fiecare canal
+    la una sau mai multe teme, cu scoruri de apartenență.
+
+    Fluxul:
+    1. Încarcă toate profilurile EMA din SQLite
+    2. Rulează BERTopic cu nr. automat de teme (min_topic_size=3)
+    3. Salvează temele și distribuțiile în SQLite
+    4. Actualizează cache-ul global pentru endpoint REST
+    5. Reconstruiește graful narativ și trimite update WebSocket
+    """
+    global narrative_topics_cache, narrative_profiles_cache, _last_narrative_run
+
+    try:
+        from bertopic import BERTopic
+        from sklearn.feature_extraction.text import CountVectorizer
+    except ImportError:
+        logger.error("[Narrative] BERTopic nu e instalat. Rulează: pip install bertopic")
+        return
+
+    profiles = db_get_all_narrative_profiles()
+    if len(profiles) < 5:
+        logger.info("[Narrative] Prea puține profile pentru clustering (min 5).")
+        return
+
+    logger.info(f"[Narrative] BERTopic pe {len(profiles)} canale...")
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    try:
+        channels  = list(profiles.keys())
+        # Reprezentăm fiecare canal ca string din cele mai apropiate mesaje reale
+        # din fereastra de 7 zile — BERTopic lucrează pe text, nu pe vectori.
+        docs = []
+        for ch in channels:
+            msgs = db_get_recent_messages(ch, days=7)
+            docs.append(" ".join(msgs[:30]) if msgs else ch)
+
+        vectorizer = CountVectorizer(
+            ngram_range=(1, 2),
+            stop_words=None,       # păstrăm stopwords — avem limbi mixte
+            min_df=2,
+            max_features=5000,
+        )
+        topic_model = BERTopic(
+            embedding_model=similarity_model,
+            vectorizer_model=vectorizer,
+            min_topic_size=3,      # minim 3 canale per temă
+            nr_topics="auto",
+            verbose=False,
+        )
+
+        topics, probs = topic_model.fit_transform(docs)
+
+        # Extragem info despre teme
+        topic_info = topic_model.get_topic_info()
+        topics_to_save = []
+        for _, row in topic_info.iterrows():
+            tid = int(row["Topic"])
+            if tid == -1:
+                continue  # -1 = outlieri în BERTopic
+            keywords = [w for w, _ in topic_model.get_topic(tid)[:10]]
+            topics_to_save.append({
+                "topic_id": tid,
+                "keywords": keywords,
+                "size":     int(row["Count"]),
+            })
+        db_save_topics(run_id, topics_to_save)
+
+        # Atribuim distribuții per canal
+        channel_topics = {}
+        for i, ch in enumerate(channels):
+            t_id = int(topics[i])
+            # probs poate fi array 1D (topic unic) sau 2D (toate temele)
+            if hasattr(probs, "ndim") and probs.ndim == 2:
+                dist = {str(j): float(probs[i][j]) for j in range(probs.shape[1])}
+            else:
+                dist = {str(t_id): 1.0}
+            channel_topics[ch] = {
+                "distribution": dist,
+                "dominant":     t_id,
+            }
+        db_update_channel_topics(channel_topics, run_id)
+
+        # Actualizăm cache-urile globale
+        narrative_topics_cache  = topics_to_save
+        narrative_profiles_cache = {
+            ch: {
+                "dominant_topic":     channel_topics[ch]["dominant"],
+                "topic_distribution": channel_topics[ch]["distribution"],
+            }
+            for ch in channels
+        }
+        _last_narrative_run = datetime.now()
+
+        n_topics = len(topics_to_save)
+        logger.info(f"[Narrative] Clustering complet: {n_topics} teme, {len(channels)} canale.")
+
+    except Exception as e:
+        logger.error(f"[Narrative] Eroare BERTopic: {e}", exc_info=True)
+
+
+async def background_narrative_clusterer():
+    """
+    Task asyncio care rulează BERTopic o dată la NARRATIVE_RUN_INTERVAL_HOURS.
+    Primul run după 10 minute de la pornire (lasă sistemul să acumuleze date).
+    Rulează în asyncio.to_thread pentru a nu bloca event loop-ul.
+    """
+    await asyncio.sleep(600)   # 10 minute după pornire
+    while running:
+        if nlp_ready and similarity_model is not None:
+            logger.info("[Narrative] Pornesc clustering narativ...")
+            await asyncio.to_thread(run_narrative_clustering)
+        await asyncio.sleep(NARRATIVE_RUN_INTERVAL_HOURS * 3600)
+
+
+def db_get_all_channels() -> list:
+    """
+    Returnează lista distinctă de canale care au cel puțin un mesaj în DB.
+    Folosit la warm-up pentru a reconstrui channels_set fără a depinde de
+    un fișier de configurație extern.
+    """
+    with _db_lock:
+        conn = db_connect()
+        rows = conn.execute(
+            "SELECT DISTINCT channel FROM messages ORDER BY channel"
+        ).fetchall()
+        conn.close()
+    return [r[0] for r in rows]
+
+
+def db_get_recent_messages_all_channels(days: int = ANALYSIS_WINDOW_DAYS) -> dict:
+    """
+    Returnează {channel: [text, ...]} pentru toate canalele din fereastra de `days` zile.
+    Un singur query în loc de N queries separate — esențial pentru warm-up rapid
+    la 200+ canale (evită N×overhead de conexiune SQLite).
+    """
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    with _db_lock:
+        conn = db_connect()
+        rows = conn.execute(
+            "SELECT channel, text FROM messages WHERE ts >= ? ORDER BY channel, ts ASC",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+    result: dict = {}
+    for channel, text in rows:
+        result.setdefault(channel, []).append(text)
+    return result
+
+
+# ─────────────────────────────────────────────
 # Backup complet
 # ─────────────────────────────────────────────
 def full_backup():
@@ -502,7 +938,7 @@ def full_backup():
     json_filename = f"backups/backup_{timestamp}.json"
     json_backup   = {k: v for k, v in backup.items() if k != "ch_embs_cache"}
     with open(json_filename, "w", encoding="utf-8") as f:
-        json.dump(json_backup, f, ensure_ascii=False, indent=2)
+        json.dump(json_backup, f, cls=NumpyEncoder, ensure_ascii=False, indent=2)
 
     logger.info(f"✅ Backup complet: {filename}")
     return filename
@@ -675,6 +1111,98 @@ def load_project_state(project_data):
         return False
 
 
+def db_warm_up_state():
+    """
+    Reconstruiește starea RAM din SQLite la repornirea serverului.
+
+    Ce se reface:
+    - channels_set        — din DISTINCT channel în messages
+    - nodes_data          — stub minim (id + label) pentru fiecare canal
+    - ch_msgs_cache       — ultimele 50 mesaje per canal din fereastra de 3 zile
+    - ch_msgs_set         — set pentru deduplicare rapidă
+    - ch_lang_cache       — limba detectată din primele 10 mesaje
+    - ch_style_cache      — amprentă stilometrică recalculată
+
+    Ce NU se reface aici (necesită modele NLP care nu sunt încă încărcate):
+    - ch_embs_cache       — reconstruite în warm_up_embeddings() după NLP ready
+    - edges_data          — se reumple din analyzer în primul ciclu
+    - edges_type          — idem
+
+    Graful Louvain se construiește din edges_cumulative (SQLite) la primul ciclu
+    de analiză — nu depinde de edges_data din RAM.
+    """
+    global channels_set, nodes_data, ch_msgs_cache, ch_msgs_set
+    global ch_lang_cache, ch_style_cache
+
+    logger.info("[WarmUp] Reconstruiesc starea RAM din SQLite...")
+
+    all_channels = db_get_all_channels()
+    if not all_channels:
+        logger.info("[WarmUp] Baza de date goală — nimic de restaurat.")
+        return
+
+    recent_by_channel = db_get_recent_messages_all_channels(days=ANALYSIS_WINDOW_DAYS)
+
+    restored = 0
+    for ch in all_channels:
+        channels_set.add(ch)
+        if ch not in nodes_data:
+            nodes_data[ch] = {"id": ch, "label": ch, "subscribers": 0}
+
+        msgs = recent_by_channel.get(ch, [])
+        if msgs:
+            ch_msgs_cache[ch] = msgs[-50:]
+            ch_msgs_set[ch]   = set(msgs)
+            ch_lang_cache[ch] = detect_language(" ".join(msgs[:10]))
+            try:
+                ch_style_cache[ch] = get_stylometric_fingerprint(msgs)
+            except Exception as e:
+                logger.debug(f"[WarmUp] Stilometrie eșuată pentru {ch}: {e}")
+        restored += 1
+
+    logger.info(
+        f"[WarmUp] Restaurate {restored} canale, "
+        f"{sum(len(v) for v in ch_msgs_cache.values())} mesaje în cache."
+    )
+
+
+def warm_up_embeddings():
+    """
+    Reconstruiește ch_embs_cache din SQLite după ce modelele NLP sunt gata.
+    Apelat din _load_nlp_models() imediat după ce similarity_model devine disponibil.
+    Rulează în background thread — nu blochează event loop-ul.
+    """
+    global ch_embs_cache
+
+    if similarity_model is None:
+        return
+
+    channels = list(channels_set)
+    if not channels:
+        return
+
+    logger.info(f"[WarmUp] Reconstruiesc embeddings pentru {len(channels)} canale...")
+    recent_by_channel = db_get_recent_messages_all_channels(days=ANALYSIS_WINDOW_DAYS)
+
+    rebuilt = 0
+    for ch in channels:
+        msgs = recent_by_channel.get(ch, [])
+        if not msgs:
+            continue
+        try:
+            clean_texts = [clean_text(t) for t in msgs if len(clean_text(t)) > 10]
+            orig_valid  = [t for t in msgs if len(clean_text(t)) > 10]
+            if not clean_texts:
+                continue
+            matrix = similarity_model.encode(clean_texts, show_progress_bar=False)
+            ch_embs_cache[ch] = {"orig_texts": orig_valid, "matrix": matrix}
+            rebuilt += 1
+        except Exception as e:
+            logger.warning(f"[WarmUp] Embeddings eșuate pentru {ch}: {e}")
+
+    logger.info(f"[WarmUp] Embeddings reconstruite pentru {rebuilt}/{len(channels)} canale.")
+
+
 def hash_project_state(state):
     state_str = json.dumps(state, sort_keys=True, default=str, cls=NumpyEncoder)
     return hashlib.md5(state_str.encode()).hexdigest()[:8]
@@ -744,12 +1272,18 @@ async def send_graph_update(websocket, G):
     for k, v in edges_data.items():
         if k[0] in displayed and k[1] in displayed:
             etype = edges_type.get(k, "direct")
+            if etype == "inferred_tranzitiv":
+                etype_label = "inferată tranzitiv"
+            elif etype == "inferred_hibrid":
+                etype_label = "inferată hibrid"
+            else:
+                etype_label = "directă"
             f_edges.append({
                 "from":  k[0],
                 "to":    k[1],
                 "value": round(v, 3),
-                "title": f"Forta: {v:.2f} ({'inferată' if etype == 'inferred' else 'directă'})",
-                "type":  etype,  # FIX: trimitem tipul muchiei către UI
+                "title": f"Forta: {v:.2f} ({etype_label})",
+                "type":  etype,
             })
 
     return {"nodes": f_nodes, "edges": f_edges}
@@ -793,15 +1327,32 @@ def _load_nlp_models(loop):
         )
         logger.info("[NLP] Sentiment ready.")
 
+        # Setăm nlp_ready=True ACUM — toate modelele sunt încărcate și funcționale.
+        # warm_up_embeddings rulează în background thread separat: durează 5-15 min
+        # (202 canale × sute de mesaje) și nu trebuie să blocheze semnalizarea UI.
+        # Analyzer-ul va găsi ch_embs_cache gol inițial și va reconstrui embeddings
+        # incremental prin update_embeddings_incremental la primul ciclu de scraping.
         nlp_ready  = True
         nlp_status = "Sistem NLP Pregătit."
         logger.info("[NLP] TOATE MODELELE ACTIVE.")
         _notify_state(loop)
+
+        # Warm-up în background — nu blochează nlp_ready
+        threading.Thread(target=warm_up_embeddings, daemon=True).start()
+
     except Exception as e:
         logger.error(f"[NLP] EROARE INCARCARE: {e}", exc_info=True)
 
 
 def _notify_state(loop):
+    """
+    Trimite state_update (tipul pe care frontend-ul îl procesează în updateUI)
+    din background thread fără a bloca event loop-ul.
+    Nu folosim .result() — produce deadlock când event loop-ul e ocupat.
+    Nu folosim nlp_status_update — frontend-ul nu îl tratează.
+    run_coroutine_threadsafe + send_state() este corect: fire-and-forget,
+    event loop-ul procesează mesajul când e liber (de obicei <10ms).
+    """
     if loop and loop.is_running():
         asyncio.run_coroutine_threadsafe(manager.send_state(), loop)
 
@@ -863,6 +1414,12 @@ _STOPWORDS_STYLE = {
 
 
 def get_stylometric_fingerprint(texts: list) -> np.ndarray:
+    """
+    Calculează amprenta stilometrică pe 18 dimensiuni din lista de texte primită.
+    Apelantul este responsabil să furnizeze texte din fereastra dorită (ex. 3 zile din SQLite).
+    Dimensiunea 16 (para_var) = coeficientul de variație al lungimilor de mesaje,
+    calculat consistent atât în _msg_vec (normalizat la 500) cât și la nivel de canal.
+    """
     if not texts or len(texts) < 2:
         return np.zeros(18)
 
@@ -878,6 +1435,11 @@ def get_stylometric_fingerprint(texts: list) -> np.ndarray:
         n_total   = len(words_lo) + 1
         letters   = re.findall(r"[a-zA-Z\u00C0-\u024F\u0400-\u04FF]", t)
         upper     = re.findall(r"[A-Z\u00C0-\u00DE\u0400-\u042F]", t)
+        char_lens_local = np.array([len(s) for s in sents]) if sents else np.array([len(t)])
+        # FIX dimensiunea 16: coeficient de variație al lungimii propozițiilor,
+        # consistent cu calculul la nivel de canal de mai jos.
+        para_var = float(np.std(char_lens_local) / (np.mean(char_lens_local) + 1.0))
+        para_var = min(para_var, 1.0)
         return np.array([
             min(len(t) / 500.0, 1.0),
             len(re.findall(r"[.,!?;:]", t)) / n_char,
@@ -895,14 +1457,17 @@ def get_stylometric_fingerprint(texts: list) -> np.ndarray:
             sum(1 for l in sent_lens if l < 5) / n_sents,
             sum(1 for l in sent_lens if l > 20) / n_sents,
             min(t.count("?") / 3.0, 1.0),
-            float(len(t)),
+            para_var,
             1.0 if re.search(r"https?://", t) else 0.0,
         ], dtype=float)
 
     all_vecs  = [_msg_vec(t) for t in texts]
     medians   = np.median(np.stack(all_vecs), axis=0)
+    # FIX: dimensiunea 16 la nivel de canal = coeficientul de variație al lungimii
+    # mesajelor întregi (nu al propozițiilor), consistent cu intenția "para_var".
+    # Nu mai suprascriem mediana cu o valoare de altă natură.
     char_lens = np.array([len(t) for t in texts], dtype=float)
-    medians[16] = min(np.std(char_lens) / (np.mean(char_lens) + 1.0), 1.0)
+    medians[16] = min(float(np.std(char_lens) / (np.mean(char_lens) + 1.0)), 1.0)
     return medians
 
 
@@ -962,13 +1527,13 @@ def parse_subscribers(text: str) -> int:
 def scrape_channel(username: str) -> dict:
     u = username.lstrip("@")
     try:
-        r1    = requests.get(f"https://t.me/{u}", timeout=8)
+        r1    = requests.get(f"https://t.me/{u}", timeout=15)
         s1    = BeautifulSoup(r1.text, "html.parser")
         t_el  = s1.find("div", class_="tgme_page_title")
         title = t_el.text.strip() if t_el else u
         e_el  = s1.find("div", class_="tgme_page_extra")
         subs  = parse_subscribers(e_el.text if e_el else "0")
-        r2    = requests.get(f"https://t.me/s/{u}", timeout=8)
+        r2    = requests.get(f"https://t.me/s/{u}", timeout=15)
         s2    = BeautifulSoup(r2.text, "html.parser")
         msgs  = []
         for w in s2.find_all("div", class_="tgme_widget_message_text"):
@@ -1300,7 +1865,9 @@ def _analyse_pair_global(c1: str, c2: str, mode: str, threshold: float):
         }
 
         def pick_representative(ch: str, vec: np.ndarray) -> str:
-            msgs = ch_msgs_cache.get(ch, [])
+            # FIX: ch_msgs_cache nu mai e populat după migrarea la SQLite.
+            # Citim din fereastra de 3 zile pentru a găsi mesajul cel mai reprezentativ.
+            msgs = db_get_recent_messages(ch, days=ANALYSIS_WINDOW_DAYS)
             if not msgs:
                 return ""
             best_msg, best_dist = msgs[0], float("inf")
@@ -1476,6 +2043,10 @@ manager = ConnectionManager()
 async def startup_event():
     logger.info("Pornire aplicație — inițiere încărcare modele NLP.")
     db_init()
+    # Reconstruim starea RAM din SQLite sincron înainte de orice altceva.
+    # Canalele, mesajele, stilometria și cache-urile de deduplicare sunt
+    # disponibile imediat — fără să așteptăm primul ciclu de scraping (~11 min).
+    db_warm_up_state()
     loop = asyncio.get_running_loop()
     start_nlp_loading(loop)
 
@@ -1494,14 +2065,14 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             try:
-                # Timeout mărit la 60s — cu 203 canale, broadcast-urile din
-                # analyzer vin la fiecare 10s, deci 60s e suficient de relaxat
-                # fără a lăsa conexiunea moartă prea mult timp.
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
-                cmd  = json.loads(data)
+                # Timeout 90s — broadcast-urile vin la fiecare 10s, deci 90s
+                # înseamnă că tolerăm 9 cicluri consecutive fără trafic înainte
+                # să considerăm conexiunea moartă.
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=90.0)
+                cmd    = json.loads(data)
                 action = cmd.get("action")
 
-                # Ignorăm pong-urile venite de la client (răspuns la ping-ul uvicorn)
+                # Ignorăm pong-urile aplicative trimise de client
                 if action == "pong" or cmd.get("type") == "pong":
                     continue
 
@@ -1526,7 +2097,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     ch_embs_cache.pop(ch, None)
                     ch_style_cache.pop(ch, None)
                     ch_lang_cache.pop(ch, None)
-                    for k in [k for k in edges_data if ch in k]:
+                    for k in [k for k in edges_data if ch in (k[0], k[1])]:
                         edges_data.pop(k, None)
                         edges_type.pop(k, None)
                     await manager.send_state()
@@ -1589,7 +2160,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         paused  = False
                         t1 = asyncio.create_task(background_scraper())
                         t2 = asyncio.create_task(background_analyzer())
-                        background_tasks.extend([t1, t2])
+                        t3 = asyncio.create_task(background_narrative_clusterer())
+                        background_tasks.extend([t1, t2, t3])
                     await manager.send_state()
 
                 elif action == "stop":
@@ -1746,14 +2318,21 @@ async def websocket_endpoint(websocket: WebSocket):
                         }))
 
             except asyncio.TimeoutError:
-                # La timeout simplu continuăm — nu trimitem ping manual,
-                # uvicorn se ocupă de keepalive la nivel de transport.
+                # 90s fără trafic — trimitem ping aplicativ pentru a verifica conexiunea
+                try:
+                    await websocket.send_text(safe_json_dumps({"type": "ping"}))
+                except Exception:
+                    break
                 continue
+            except WebSocketDisconnect:
+                logger.info("[WS] Client deconectat normal")
+                break
             except Exception as e:
                 err_str = str(e)
-                # Deconectare normală — nu logăm ca eroare
-                if "1000" in err_str or "1001" in err_str or "ConnectionClosed" in type(e).__name__:
-                    logger.info(f"WebSocket închis normal: {e}")
+                # 1011 = keepalive ping timeout, 1006 = abnormal closure — ambele sunt
+                # deconectări de transport, nu erori de logică aplicativă
+                if any(x in err_str for x in ("1011", "1006", "keepalive", "ConnectionClosed")):
+                    logger.info("[WS] Client deconectat (transport)")
                 else:
                     logger.error(f"WebSocket error: {e}")
                 break
@@ -1774,24 +2353,43 @@ async def background_scraper():
     global running, paused, channels_set, nodes_data
     global ch_msgs_cache, ch_embs_cache, ch_style_cache, dirty_channels
 
-    semaphore  = asyncio.Semaphore(5)
-    BATCH_SIZE = 20
+    # Semaforul limitat la 3 conexiuni simultane față de 5 anterior.
+    # Telegram rate-limitează agresiv când vede 5+ cereri simultane din același IP —
+    # mai ales pe instanțe cu 200+ canale. 3 simultane + delay între batch-uri
+    # reduce dramatic timeout-urile fără a mări semnificativ durata ciclului.
+    semaphore  = asyncio.Semaphore(3)
+    BATCH_SIZE = 10   # 10 în loc de 20 — batch mai mic, pauze mai dese
+
+    async def scrape_with_retry(ch: str) -> dict:
+        """Încearcă scraping de două ori cu pauză între încercări."""
+        for attempt in range(2):
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(scrape_channel, ch),
+                    timeout=25.0,
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                if attempt == 0:
+                    # Prima încercare eșuată — așteptăm 3s și reîncercăm
+                    await asyncio.sleep(3)
+                else:
+                    # A doua încercare eșuată — renunțăm
+                    err = str(e)
+                    if "TimeoutError" in type(e).__name__ or "timeout" in err.lower():
+                        logger.warning(f"[Scraper] Timeout {ch}, sărit.")
+                    else:
+                        logger.error(f"[Scraper] Eroare {ch}: {e}")
+                    return None
+        return None
 
     async def process_single_channel(ch: str):
         async with semaphore:
             if not running or paused:
                 return
-            try:
-                await manager.broadcast(safe_json_dumps({"type": "status", "msg": f"Scanez {ch}..."}))
-                data = await asyncio.wait_for(
-                    asyncio.to_thread(scrape_channel, ch),
-                    timeout=20.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(f"[Scraper] Timeout {ch}, sărit.")
-                return
-            except Exception as e:
-                logger.error(f"[Scraper] Eroare {ch}: {e}")
+            await manager.broadcast(safe_json_dumps({"type": "status", "msg": f"Scanez {ch}..."}))
+
+            data = await scrape_with_retry(ch)
+            if data is None:
                 return
 
             nodes_data[ch] = {
@@ -1804,9 +2402,16 @@ async def background_scraper():
                 await manager.broadcast(safe_json_dumps({"type": "node_update", "node": nodes_data[ch]}))
                 return
 
-            ch_lang_cache[ch]  = detect_language(" ".join(msgs[:10]))
-            ch_style_cache[ch] = await asyncio.to_thread(get_stylometric_fingerprint, msgs)
+            # Limba: actualizăm numai dacă nu avem deja o valoare stabilă.
+            # Detecția pe 10 mesaje scraped e fragilă pentru canale bilingve —
+            # odată setată din suficiente mesaje, nu o mai schimbăm la fiecare ciclu.
+            if ch not in ch_lang_cache or ch_lang_cache[ch] == "other":
+                ch_lang_cache[ch] = detect_language(" ".join(msgs[:10]))
 
+            # FIX stilometrie: fingerprint-ul se calculează din fereastra de 3 zile
+            # din SQLite, nu din ultimele 15 mesaje scraped. La 50+ msg/zi, ultimele
+            # 15 mesaje reflectă stilul ultimelor ~30 de minute — insuficient.
+            # Apelăm după insert, ca noile mesaje să fie deja în DB.
             # Deduplicare față de tot istoricul din SQLite (nu doar ultimele 50 din RAM)
             existing_set = await asyncio.to_thread(db_get_all_messages_set, ch)
 
@@ -1821,14 +2426,22 @@ async def background_scraper():
                 await asyncio.to_thread(db_insert_messages, ch, new_msgs)
                 # Rebuilding embeddings din fereastra glisantă (3 zile din SQLite)
                 await asyncio.to_thread(update_embeddings_incremental, ch, new_msgs)
-                # BUG 3 FIX: analyse_text folosește ner_pipeline și sentiment_pipeline
-                # care sunt None până când nlp_ready devine True. Fără această
-                # verificare, apelul returnează {} silențios dar consumă timp inutil.
+                # Actualizăm profilul narativ zilnic (EMA 7 zile) — baza pentru BERTopic
+                await asyncio.to_thread(update_narrative_profile_for_channel, ch)
                 if nlp_ready:
                     for m in new_msgs[:5]:
                         await asyncio.to_thread(analyse_text, m)
                 dirty_channels.add(ch)
                 logger.info(f"[Scraper] {ch}: {len(new_msgs)} mesaje noi → dirty")
+
+            # FIX stilometrie: recalculăm fingerprint-ul din fereastra de 3 zile
+            # după ce noile mesaje sunt în SQLite. Astfel amprenta reflectă stilul
+            # general al autorilor pe 3 zile, nu ultimele 15 mesaje scraped.
+            recent_for_style = await asyncio.to_thread(db_get_recent_messages, ch, ANALYSIS_WINDOW_DAYS)
+            if len(recent_for_style) >= 2:
+                ch_style_cache[ch] = await asyncio.to_thread(
+                    get_stylometric_fingerprint, recent_for_style
+                )
 
             await manager.broadcast(safe_json_dumps({"type": "node_update", "node": nodes_data[ch]}))
 
@@ -1853,6 +2466,11 @@ async def background_scraper():
                 break
             batch = ch_list[start:start + BATCH_SIZE]
             await asyncio.gather(*[process_single_channel(ch) for ch in batch])
+            # Pauză între batch-uri — lasă Telegram să respire.
+            # 202 canale ÷ 10 per batch = 20 batch-uri × 2s = 40s per ciclu complet,
+            # față de 0s pauză anterior care genera rafale de 20 cereri simultane.
+            if running and not paused and start + BATCH_SIZE < len(ch_list):
+                await asyncio.sleep(2)
         await asyncio.sleep(10)
 
 
@@ -2105,9 +2723,11 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=8000,
-        # Ping WebSocket la fiecare 30s, timeout răspuns 20s.
-        # Valorile implicite uvicorn (20s/20s) sunt prea agresive când
-        # event loop-ul e ocupat cu scraping/encoding NLP pe 200+ canale.
-        ws_ping_interval=30,
-        ws_ping_timeout=20,
+        # ws_ping_interval=None dezactivează ping-ul uvicorn complet.
+        # Pe Python 3.12+ și websockets ≥ 12, uvicorn folosește websockets-legacy
+        # care are propriul mecanism de ping intern — două surse de ping pe aceeași
+        # conexiune produc inevitabil "keepalive ping timeout" cod 1011.
+        # Broadcast-urile din analyzer (la fiecare 10s) țin conexiunea activă.
+        ws_ping_interval=None,
+        ws_ping_timeout=None,
     )
