@@ -102,6 +102,95 @@ async def get_narratives():
     }
 
 
+@app.get("/api/bimodal_export")
+async def bimodal_export():
+    """
+    Exportă rețeaua bimodală ca JSON compatibil cu Gephi și Cytoscape.
+
+    Structura returnată:
+    {
+      "nodes": [
+        {"id": "@canal", "type": "channel", "label": "...", "community": 0,
+         "dominant_topic": 2, "subscribers": 12000},
+        {"id": "topic_0", "type": "topic", "label": "alegeri · partid · vot",
+         "size": 15}
+      ],
+      "edges": [
+        {"source": "@canal", "target": "topic_0", "weight": 0.8,  "type": "channel_topic"},
+        {"source": "@canal", "target": "@canal2",  "weight": 4.2,  "type": "coordination"}
+      ],
+      "meta": {"exported_at": "...", "total_channels": 202, "total_topics": 8}
+    }
+
+    Gephi: File → Import Spreadsheet (nodes.csv + edges.csv) sau Network → Import JSON.
+    Cytoscape: File → Import → Network from File.
+    D3: consumat direct de tab-ul bimodal din interfață.
+    """
+    profiles        = await asyncio.to_thread(db_get_all_narrative_profiles)
+    topics          = await asyncio.to_thread(db_get_latest_topics)
+    cumul_scores    = await asyncio.to_thread(db_get_cumulative_scores)
+
+    # ── Noduri ────────────────────────────────────────────────────────────────
+    nodes = []
+
+    # Noduri de tip canal
+    for ch, data in profiles.items():
+        node_info = nodes_data.get(ch, {})
+        nodes.append({
+            "id":             ch,
+            "type":           "channel",
+            "label":          node_info.get("label", ch),
+            "subscribers":    node_info.get("subscribers", 0),
+            "dominant_topic": data["dominant_topic"],
+            "topic_dist":     data["topic_distribution"],
+        })
+
+    # Noduri de tip temă narativă
+    for t in topics:
+        nodes.append({
+            "id":       f"topic_{t['topic_id']}",
+            "type":     "topic",
+            "label":    " · ".join(t["keywords"][:5]),
+            "keywords": t["keywords"],
+            "size":     t["size"],
+        })
+
+    # ── Muchii ────────────────────────────────────────────────────────────────
+    edges = []
+
+    # Muchii canal → temă (din topic_distribution, prag minim 0.1)
+    for ch, data in profiles.items():
+        for tid_str, weight in data["topic_distribution"].items():
+            if float(weight) >= 0.1:
+                edges.append({
+                    "source": ch,
+                    "target": f"topic_{tid_str}",
+                    "weight": round(float(weight), 4),
+                    "type":   "channel_topic",
+                })
+
+    # Muchii canal → canal (coordonare socială din edges_cumulative)
+    for (ch1, ch2), score in cumul_scores.items():
+        if ch1 in profiles and ch2 in profiles:
+            edges.append({
+                "source": ch1,
+                "target": ch2,
+                "weight": round(score, 4),
+                "type":   "coordination",
+            })
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "meta":  {
+            "exported_at":     datetime.now().isoformat(),
+            "total_channels":  len(profiles),
+            "total_topics":    len(topics),
+            "total_edges":     len(edges),
+        },
+    }
+
+
 @app.get("/api/backup_now")
 async def backup_now():
     try:
@@ -330,12 +419,15 @@ TRANSITIVE_PENALTY_L2 = 0.50   # lanț de lungime 2 (A–B–C)
 TRANSITIVE_PENALTY_L3 = 0.35   # lanț de lungime 3 (A–B–C–D)
 
 NLP_ALIGNMENT_MIN = 0.3
-# FIX: 0.88 → 0.95 pentru muchii directe.
-DECAY_BASE     = 0.95
-# Decay diferențiat pe tipul inferenței:
-# - hibrid (un singur salt): 0.75 — inferența dispare în ~8 cicluri dacă nu e confirmată
-# - tranzitiv (lanț 2–3 salturi): 0.70 — mai agresiv, fals-pozitivele ies mai repede
-DECAY_INFERRED = {"hibrid": 0.75, "tranzitiv": 0.70}
+# DECAY_BASE 0.95 → 0.98: la 0.95 o muchie directă murea în ~45 cicluri (~7.5 min),
+# mai puțin decât rotația completă round-robin (~68 cicluri, ~11 min).
+# Matematic, decay omoră muchia înainte să fie reconfirmată → colaps periodic la 0.
+# La 0.98: durata de viață ~100 cicluri (~16 min) > rotația completă → stabil.
+DECAY_BASE     = 0.98
+# Decay diferențiat pe tipul inferenței — rămân mai agresive ca direct:
+# - hibrid (un singur salt): 0.85 — dispare în ~18 cicluri fără confirmare
+# - tranzitiv (lanț 2–3 salturi): 0.80 — dispare în ~10 cicluri fără confirmare
+DECAY_INFERRED = {"hibrid": 0.85, "tranzitiv": 0.80}
 
 # ─────────────────────────────────────────────
 # SQLite — persistență mesaje + scoruri cumulative
@@ -753,8 +845,8 @@ def run_narrative_clustering():
     try:
         from bertopic import BERTopic
         from sklearn.feature_extraction.text import CountVectorizer
-    except ImportError:
-        logger.error("[Narrative] BERTopic nu e instalat. Rulează: pip install bertopic")
+    except ImportError as e:
+        logger.error(f"[Narrative] Import BERTopic eșuat: {e}. Rulează: pip install bertopic")
         return
 
     profiles = db_get_all_narrative_profiles()
@@ -1164,6 +1256,24 @@ def db_warm_up_state():
         f"[WarmUp] Restaurate {restored} canale, "
         f"{sum(len(v) for v in ch_msgs_cache.values())} mesaje în cache."
     )
+
+    # Restaurăm și cache-urile narative din SQLite
+    global narrative_topics_cache, narrative_profiles_cache
+    try:
+        narrative_topics_cache = db_get_latest_topics()
+        profiles = db_get_all_narrative_profiles()
+        narrative_profiles_cache = {
+            ch: {
+                "dominant_topic":     data["dominant_topic"],
+                "topic_distribution": data["topic_distribution"],
+            }
+            for ch, data in profiles.items()
+        }
+        if narrative_topics_cache:
+            logger.info(f"[WarmUp] Restaurate {len(narrative_topics_cache)} teme narative, "
+                        f"{len(narrative_profiles_cache)} profile canale.")
+    except Exception as e:
+        logger.debug(f"[WarmUp] Narrative cache restaurare eșuată: {e}")
 
 
 def warm_up_embeddings():
@@ -1622,17 +1732,16 @@ async def perform_hybrid_inference(max_inferences: int):
     """
     global edges_data, edges_type, posts_history
 
-    if len(edges_data) < 20:
+    if len(edges_data) < 5:
         return
 
     try:
-        # FIX 1: prag de filtrare egal cu pragul direct
         G = nx.Graph()
         for (u, v), w in edges_data.items():
             if w > INFERENCE_GRAPH_MIN_WEIGHT and edges_type.get((u, v), "direct") == "direct":
                 G.add_edge(u, v, weight=w)
 
-        if G.number_of_edges() < 10:
+        if G.number_of_edges() < 3:
             return
 
         # FIX 5: iterăm doar pe noduri cu degree mic-mediu
@@ -2535,7 +2644,7 @@ async def background_analyzer():
                         is_affected      = bool(current_dirty & {c1, c2})
                         is_new_pair      = pair not in edges_data
                         is_inferred_weak = (
-                            edges_type.get(pair) == "inferred"
+                            edges_type.get(pair) in ("inferred_hibrid", "inferred_tranzitiv")
                             and edges_data.get(pair, 0.0) < 1.0
                         )
                         if is_affected:
@@ -2613,9 +2722,11 @@ async def background_analyzer():
                 if remaining > 5:
                     await perform_transitive_inference(min(remaining // 3, 50))
 
-            # Eliminăm muchiile moarte — pragul 0.15 se aplică tuturor tipurilor.
-            # Inferențele tranzitive (decay 0.70) ating pragul mai repede decât cele hibrid (0.75).
-            dead = [p for p, s in edges_data.items() if s < 0.15]
+            # Eliminăm muchiile moarte din RAM — prag mai jos (0.05) ca să nu curățăm
+            # prematur muchii care sunt în curs de reconfirmare de round-robin.
+            # Graful afișat folosește SQLite cumulative, nu RAM — cleanup-ul RAM
+            # afectează doar prioritizarea, nu vizualizarea.
+            dead = [p for p, s in edges_data.items() if s < 0.05]
             for p in dead:
                 edges_data.pop(p, None)
                 edges_type.pop(p, None)
@@ -2623,9 +2734,6 @@ async def background_analyzer():
             dirty_channels -= current_dirty
 
             # ── Construim graful pe scoruri cumulative din SQLite ──────────────
-            # Graful pentru Louvain folosește scorurile cumulative (nu decay-ul din RAM)
-            # pentru că scopul este detectarea coordonării pe termen lung (zile).
-            # edges_data (RAM, cu decay) rămâne pentru logica de prioritizare a perechilor.
             cumulative_scores = await asyncio.to_thread(db_get_cumulative_scores)
             G = nx.Graph()
             for (u, v), w in cumulative_scores.items():
@@ -2685,24 +2793,29 @@ async def background_analyzer():
                 f_nodes.append(nd)
 
             f_edges = []
-            for k, v in edges_data.items():
-                if k[0] in displayed and k[1] in displayed:
-                    etype     = edges_type.get(k, "direct")
-                    cum_score = cumulative_scores.get(k, cumulative_scores.get((k[1], k[0]), 0.0))
-                    if etype == "inferred_tranzitiv":
-                        etype_label = "inferată tranzitiv"
-                    elif etype == "inferred_hibrid":
-                        etype_label = "inferată hibrid"
-                    else:
-                        etype_label = "directă"
-                    f_edges.append({
-                        "from":  k[0],
-                        "to":    k[1],
-                        "value": round(cum_score if cum_score > 0 else v, 3),
-                        "title": (f"Sesiune: {v:.2f} | Cumulativ: {cum_score:.2f} "
-                                  f"({etype_label})"),
-                        "type":  etype,
-                    })
+            # f_edges se construiește din cumulative_scores (SQLite), nu din edges_data RAM.
+            # edges_data RAM poate fi gol temporar din cauza decay-ului între reconfirmări —
+            # asta producea colapsul periodic la 0 muchii în UI.
+            for (u, v), w in cumulative_scores.items():
+                if u not in displayed or v not in displayed:
+                    continue
+                pair  = tuple(sorted([u, v]))
+                etype = edges_type.get(pair, "direct")
+                ram_score = edges_data.get(pair, edges_data.get((v, u), 0.0))
+                if etype == "inferred_tranzitiv":
+                    etype_label = "inferată tranzitiv"
+                elif etype == "inferred_hibrid":
+                    etype_label = "inferată hibrid"
+                else:
+                    etype_label = "directă"
+                f_edges.append({
+                    "from":  u,
+                    "to":    v,
+                    "value": round(w, 3),
+                    "title": (f"Sesiune: {ram_score:.2f} | Cumulativ: {w:.2f} "
+                              f"({etype_label})"),
+                    "type":  etype,
+                })
 
             await manager.broadcast(safe_json_dumps({
                 "type":  "graph_update",

@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Telegram Monitor - Rețea Socială</title>
     <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
     <link
         href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap"
         rel="stylesheet">
@@ -1139,6 +1140,11 @@
                             <button class="graph-nav-button" onclick="exportGraph()" title="Exportă graf">&#10515;</button>
                             <button class="graph-nav-button" onclick="resetView()" title="Resetează">&#8634;</button>
                         </div>
+                        <div class="graph-nav-group">
+                            <button class="graph-nav-button active" id="btn-view-social" onclick="switchView('social')" title="Rețea socială"><svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="5" cy="9" r="2"/><circle cx="13" cy="5" r="2"/><circle cx="13" cy="13" r="2"/><line x1="7" y1="8" x2="11" y2="6"/><line x1="7" y1="10" x2="11" y2="12"/></svg></button>
+                            <button class="graph-nav-button" id="btn-view-bimodal" onclick="switchView('bimodal')" title="Rețea bimodală"><svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="5" x2="16" y2="5" stroke-dasharray="2 2"/><line x1="2" y1="13" x2="16" y2="13"/><circle cx="5" cy="5" r="1.5"/><circle cx="11" cy="5" r="1.5"/><rect x="4" y="10" width="4" height="6" rx="1"/><rect x="11" y="10" width="4" height="6" rx="1"/><line x1="5" y1="6.5" x2="6" y2="10"/><line x1="11" y1="6.5" x2="13" y2="10"/></svg></button>
+                            <button class="graph-nav-button" onclick="exportBimodal()" title="Exportă bimodal JSON"><svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M9 3v8M6 8l3 3 3-3"/><path d="M3 13v2h12v-2"/></svg></button>
+                        </div>
                         <select id="graph-metric-select" class="header-dropdown" onchange="applyGraphStyle()">
                             <option value="default">Abonați</option>
                             <option value="community">Comunități</option>
@@ -1151,6 +1157,7 @@
                     </div>
 
                     <div id="network-graph"></div>
+                    <div id="bimodal-graph" style="display:none;width:100%;height:100%;position:absolute;top:0;left:0;overflow:hidden;"></div>
 
                     <!-- BUG 3 FIX: mutate înăuntrul graph-container (position:relative) -->
                     <div id="match-notification">⚡ NOUĂ CONEXIUNE DETECTATĂ ⚡</div>
@@ -2083,6 +2090,167 @@
                     menu.classList.remove('show');
             });
         };
+
+        // ─────────────────────────────────────────────
+        // Rețea bimodală — D3 force simulation
+        // ─────────────────────────────────────────────
+        let currentView = 'social';
+        let bimodalSim  = null;
+
+        function switchView(view) {
+            currentView = view;
+            const socialEl   = document.getElementById('network-graph');
+            const bimodalEl  = document.getElementById('bimodal-graph');
+            const btnSocial  = document.getElementById('btn-view-social');
+            const btnBimodal = document.getElementById('btn-view-bimodal');
+            if (view === 'social') {
+                socialEl.style.display  = '';
+                bimodalEl.style.display = 'none';
+                btnSocial.classList.add('active');
+                btnBimodal.classList.remove('active');
+            } else {
+                socialEl.style.display  = 'none';
+                bimodalEl.style.display = '';
+                btnSocial.classList.remove('active');
+                btnBimodal.classList.add('active');
+                loadBimodalGraph();
+            }
+        }
+
+        async function exportBimodal() {
+            try {
+                const resp = await fetch('/api/bimodal_export');
+                const data = await resp.json();
+                downloadJSON(data, `bimodal_${new Date().toISOString().slice(0,10)}.json`);
+            } catch(e) {
+                alert('Eroare export bimodal: ' + e.message);
+            }
+        }
+
+        async function loadBimodalGraph() {
+            const container = document.getElementById('bimodal-graph');
+            container.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:40px;font-size:14px;">Se încarcă rețeaua bimodală...</div>';
+            let data;
+            try {
+                const resp = await fetch('/api/bimodal_export');
+                data = await resp.json();
+            } catch(e) {
+                container.innerHTML = '<div style="color:#f87171;text-align:center;padding:40px;">Eroare la încărcarea datelor.</div>';
+                return;
+            }
+            const topics = (data.nodes || []).filter(n => n.type === 'topic');
+            if (topics.length === 0) {
+                container.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:40px;font-size:13px;">Nu există teme narative încă.<br>BERTopic rulează automat o dată pe zi, la 10 min după pornire.</div>';
+                return;
+            }
+            renderBimodalD3(container, data);
+        }
+
+        function renderBimodalD3(container, data) {
+            container.innerHTML = '';
+            const W = container.offsetWidth  || 800;
+            const H = container.offsetHeight || 600;
+            const COLORS = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#378ADD','#639922','#E24B4A'];
+            const topicColor = {};
+            data.nodes.filter(n => n.type === 'topic').forEach((n, i) => {
+                topicColor[n.id] = COLORS[i % COLORS.length];
+            });
+
+            const svg = d3.select(container).append('svg')
+                .attr('width', W).attr('height', H)
+                .style('background', 'transparent')
+                .style('position', 'absolute').style('top', 0).style('left', 0);
+
+            const g = svg.append('g');
+            svg.call(d3.zoom().scaleExtent([0.1, 5]).on('zoom', e => g.attr('transform', e.transform)));
+
+            const edges = (data.edges || []).filter(e =>
+                (e.type === 'coordination'  && e.weight > 0.5) ||
+                (e.type === 'channel_topic' && e.weight > 0.15)
+            );
+            const nodeIds = new Set();
+            edges.forEach(e => { nodeIds.add(e.source); nodeIds.add(e.target); });
+            const nodes = data.nodes.filter(n => nodeIds.has(n.id));
+
+            const sim = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(edges).id(d => d.id)
+                    .distance(d => d.type === 'channel_topic' ? 130 : 55)
+                    .strength(d => d.type === 'channel_topic' ? 0.25 : 0.7))
+                .force('charge', d3.forceManyBody().strength(d => d.type === 'topic' ? -500 : -60))
+                .force('center', d3.forceCenter(W / 2, H / 2))
+                .force('collision', d3.forceCollide().radius(d => d.type === 'topic' ? 55 : 10));
+            bimodalSim = sim;
+
+            const link = g.append('g').selectAll('line').data(edges).join('line')
+                .attr('stroke', d => d.type === 'coordination' ? '#555' : '#888')
+                .attr('stroke-width', d => d.type === 'coordination' ? Math.min(d.weight * 0.4, 4) : 1)
+                .attr('stroke-dasharray', d => d.type === 'channel_topic' ? '5 3' : null)
+                .attr('opacity', d => d.type === 'coordination' ? 0.45 : 0.6);
+
+            const drag = d3.drag()
+                .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+                .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
+                .on('end',   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; });
+
+            // Noduri temă — elipse mari
+            const topicG = g.append('g').selectAll('g')
+                .data(nodes.filter(n => n.type === 'topic')).join('g').call(drag);
+            topicG.append('ellipse')
+                .attr('rx', 52).attr('ry', 24)
+                .attr('fill', d => topicColor[d.id] + '33')
+                .attr('stroke', d => topicColor[d.id])
+                .attr('stroke-width', 1.5);
+            topicG.append('text')
+                .text(d => d.label.split(' · ').slice(0,3).join(' · '))
+                .attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
+                .attr('font-size', '11px').attr('fill', d => topicColor[d.id])
+                .attr('pointer-events', 'none');
+
+            // Noduri canal — cerculețe colorate după tema dominantă
+            const chanG = g.append('g').selectAll('circle')
+                .data(nodes.filter(n => n.type === 'channel')).join('circle')
+                .attr('r', 7)
+                .attr('fill', d => {
+                    const tid = 'topic_' + d.dominant_topic;
+                    return topicColor[tid] || '#666';
+                })
+                .attr('stroke', '#fff').attr('stroke-width', 0.8)
+                .attr('opacity', 0.85)
+                .call(drag)
+                .on('mouseover', function(e, d) {
+                    d3.select(this).attr('r', 11);
+                    tooltip.style('display', 'block')
+                        .html(`<strong>${d.label || d.id}</strong><br>Temă dominantă: ${d.dominant_topic}<br>Abonați: ${(d.subscribers||0).toLocaleString()}`);
+                })
+                .on('mousemove', e => tooltip.style('left', (e.offsetX+12)+'px').style('top', (e.offsetY-8)+'px'))
+                .on('mouseout', function() { d3.select(this).attr('r', 7); tooltip.style('display','none'); });
+
+            // Tooltip
+            const tooltip = d3.select(container).append('div')
+                .style('position','absolute').style('display','none')
+                .style('background','rgba(0,0,0,0.8)').style('color','#fff')
+                .style('padding','6px 10px').style('border-radius','4px')
+                .style('font-size','12px').style('pointer-events','none')
+                .style('max-width','200px');
+
+            // Legendă teme
+            const legendData = nodes.filter(n => n.type === 'topic');
+            const legend = svg.append('g').attr('transform', 'translate(12, 12)');
+            legendData.forEach((t, i) => {
+                const row = legend.append('g').attr('transform', `translate(0, ${i * 20})`);
+                row.append('circle').attr('r', 6).attr('fill', topicColor[t.id]);
+                row.append('text').attr('x', 12).attr('dominant-baseline','central')
+                    .attr('font-size','11px').attr('fill','#ccc')
+                    .text(t.label.split(' · ').slice(0,2).join(' · '));
+            });
+
+            sim.on('tick', () => {
+                link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+                topicG.attr('transform', d => `translate(${d.x},${d.y})`);
+                chanG.attr('cx', d => d.x).attr('cy', d => d.y);
+            });
+        }
     </script>
 </body>
 
