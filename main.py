@@ -269,23 +269,32 @@ INFERENCE_THRESHOLD = {
     "tranzitiv": 0.68,   # FIX: era 0.60 — prea permisiv
 }
 
-# FIX: pragul minim pentru ca o muchie să intre în graful de inferențe
+# FIX: pragul minim pentru ca o muchie să intre în graful de inferențe hibrid.
 # Trebuie să fie ≥ pragul direct, nu 0.5 cum era înainte.
 INFERENCE_GRAPH_MIN_WEIGHT = 0.72   # FIX: era 0.5 — principala cauză a hub-urilor false
 
-# FIX: penalizare aplicată scorului inferit față de cel direct
+# Pragul pentru graful de inferențe tranzitive — mai permisiv decât hibrid intenționat:
+# rețelele de amplificare indirectă (A→B→C) necesită ca B să fie hub comun,
+# dar A și C pot fi conectate la B cu scoruri mai mici de 0.72.
+TRANSITIVE_GRAPH_MIN_WEIGHT = 0.65
+
+# FIX: penalizare aplicată scorului inferit față de cel direct (hibrid).
 # Relațiile inférate sunt mai puțin sigure și decad mai rapid.
 INFERRED_SCORE_PENALTY = 0.65   # FIX: era 1.3 (amplificare!) — acum penalizăm
 
+# Penalizări pentru inferențe tranzitive — mai agresive pe măsura lungimii lanțului.
+# Un lanț A→B→C→D are trei salturi de incertitudine; scorul final trebuie să reflecte asta
+# ca să nu polueze graful cumulativ SQLite cu false pozitive persistente.
+TRANSITIVE_PENALTY_L2 = 0.50   # lanț de lungime 2 (A–B–C)
+TRANSITIVE_PENALTY_L3 = 0.35   # lanț de lungime 3 (A–B–C–D)
+
 NLP_ALIGNMENT_MIN = 0.3
-# FIX: 0.88 → 0.95 pentru muchii directe — la 0.88 o muchie confirmată murea în ~13 cicluri
-# (~2 min), mai repede decât round-robin-ul (68 cicluri, ~11 min) o putea reconfirma.
-# La 0.95 durata de viață crește la ~45 cicluri (~7.5 min), permițând grafului să acumuleze
-# muchii stabile și comunităților Louvain să convergă în loc să oscileze.
-DECAY_BASE        = 0.95
-# Decay agresiv pentru muchii inférate — rămâne 0.75, inferențele greșite
-# dispar rapid dacă nu sunt confirmate semantic direct.
-DECAY_INFERRED    = 0.75
+# FIX: 0.88 → 0.95 pentru muchii directe.
+DECAY_BASE     = 0.95
+# Decay diferențiat pe tipul inferenței:
+# - hibrid (un singur salt): 0.75 — inferența dispare în ~8 cicluri dacă nu e confirmată
+# - tranzitiv (lanț 2–3 salturi): 0.70 — mai agresiv, fals-pozitivele ies mai repede
+DECAY_INFERRED = {"hibrid": 0.75, "tranzitiv": 0.70}
 
 # ─────────────────────────────────────────────
 # SQLite — persistență mesaje + scoruri cumulative
@@ -1008,13 +1017,19 @@ def get_embedding_matrix(ch: str):
 # ─────────────────────────────────────────────
 def _decay_edge(pair: tuple, strength: float) -> float:
     """
-    FIX: decay diferențiat în funcție de tipul muchiei.
-    Muchiile inférate decad mai rapid (DECAY_INFERRED = 0.75) decât
-    cele directe (DECAY_BASE = 0.95). Astfel, o inferență greșită
-    dispare din graf în câteva cicluri dacă nu este confirmată semantic.
+    Decay diferențiat pe tipul muchiei:
+    - direct: DECAY_BASE (0.95) — muchiile confirmate semantic supraviețuiesc ~45 cicluri
+    - inferred/hibrid: 0.75 — un salt de inferență, dispare în ~8 cicluri fără confirmare
+    - inferred/tranzitiv: 0.70 — lanț de 2–3 salturi, dispare mai repede
+    edges_type stochează "direct", "inferred_hibrid" sau "inferred_tranzitiv".
     """
-    etype      = edges_type.get(pair, "direct")
-    base_decay = DECAY_INFERRED if etype == "inferred" else DECAY_BASE
+    etype = edges_type.get(pair, "direct")
+    if etype == "direct":
+        base_decay = DECAY_BASE
+    elif etype == "inferred_tranzitiv":
+        base_decay = DECAY_INFERRED["tranzitiv"]
+    else:
+        base_decay = DECAY_INFERRED["hibrid"]
     log_factor = 0.1 * (np.log10(strength + 1) / np.log10(11))
     return strength * (base_decay + log_factor)
 
@@ -1088,9 +1103,8 @@ async def perform_hybrid_inference(max_inferences: int):
         for a, c, w, via in inferences[:max_inferences]:
             pair = tuple(sorted([a, c]))
             if pair not in edges_data:
-                # FIX 4: scor penalizat față de relații directe
                 edges_data[pair] = min(w * INFERRED_SCORE_PENALTY, 10.0)
-                edges_type[pair] = "inferred"
+                edges_type[pair] = "inferred_hibrid"
                 posts_history.append({
                     "type":       "hibrid",
                     "ch1":        a,
@@ -1112,19 +1126,25 @@ async def perform_hybrid_inference(max_inferences: int):
 
 
 # ─────────────────────────────────────────────
-# FIX MAJOR: Inferență tranzitivă corectată
+# Inferență tranzitivă — rețele de amplificare indirectă
 # ─────────────────────────────────────────────
 async def perform_transitive_inference(max_inferences: int):
     """
-    Mod tranzitiv: inferențe prin lanțuri, cu aceleași corecții ca hibrid.
+    Detectează rețele de amplificare indirectă: A→B→C unde A și C nu se aseamănă
+    direct, dar ambele sunt conectate la același hub intermediar B.
 
-    MODIFICĂRI față de versiunea anterioară:
-    1. Același prag de intrare ridicat: INFERENCE_GRAPH_MIN_WEIGHT (0.72).
-    2. Lanțuri de lungime 2: (w_ab * w_bc)^0.5 fără bonus × 1.2.
-    3. Lanțuri de lungime 3: (w_ab * w_bc * w_cd)^(1/3) fără bonus × 1.5.
-    4. Pragul de acceptare: INFERENCE_THRESHOLD["tranzitiv"] (0.68).
-    5. Scor penalizat mai agresiv pentru lanțuri lungi.
-    6. Iterăm pe noduri puține, limitate strict.
+    Diferențe față de modul hibrid:
+    1. TRANSITIVE_GRAPH_MIN_WEIGHT = 0.65 (față de 0.72 la hibrid) — pragul mai mic
+       permite lui B să fie hub cu conexiuni moderate, nu doar puternice. Altfel
+       lanțurile de amplificare indirectă nu se formează niciodată.
+    2. Penalizări mai agresive pe lungimea lanțului:
+       - Lanț 2 (A–B–C): × 0.50 față de × 0.65 la hibrid
+       - Lanț 3 (A–B–C–D): × 0.35 față de × 0.46 la hibrid
+       Fiecare salt adaugă incertitudine — scorul final reflectă asta.
+    3. edges_type = "inferred_tranzitiv" → decay 0.70 în loc de 0.75 (hibrid),
+       inferențele de lanț dispar mai rapid dacă nu sunt confirmate semantic.
+    4. Nu persistăm în edges_cumulative — inferențele tranzitive sunt ipoteze,
+       nu confirmări semantice directe. Doar muchiile directe alimentează SQLite.
     """
     global edges_data, edges_type, posts_history
 
@@ -1132,10 +1152,11 @@ async def perform_transitive_inference(max_inferences: int):
         return
 
     try:
-        # FIX 1: același prag ridicat, numai muchii directe
+        # Graful de inferențe folosește pragul mai permisiv TRANSITIVE_GRAPH_MIN_WEIGHT
+        # și include NUMAI muchii directe confirmate semantic — nu inferențe anterioare.
         G = nx.Graph()
         for (u, v), w in edges_data.items():
-            if w > INFERENCE_GRAPH_MIN_WEIGHT and edges_type.get((u, v), "direct") == "direct":
+            if w > TRANSITIVE_GRAPH_MIN_WEIGHT and edges_type.get((u, v), "direct") == "direct":
                 G.add_edge(u, v, weight=w)
 
         if G.number_of_edges() < 5:
@@ -1143,12 +1164,14 @@ async def perform_transitive_inference(max_inferences: int):
 
         degrees    = dict(G.degree())
         median_deg = sorted(degrees.values())[len(degrees) // 2] if degrees else 1
-        candidate_nodes = [n for n, d in degrees.items() if d <= median_deg + 2]
+        # Iterăm pe noduri cu degree ≤ median + 3 — puțin mai permisiv față de hibrid
+        # pentru a captura hub-uri de amplificare cu mai mulți vecini.
+        candidate_nodes = [n for n, d in degrees.items() if d <= median_deg + 3]
 
         inferences = []
 
-        # Lanțuri de lungime 2 (A–B–C)
-        for b in candidate_nodes[:25]:  # FIX: limitat strict
+        # ── Lanțuri de lungime 2: A–B–C ──────────────────────────────────────
+        for b in candidate_nodes[:30]:
             neighbors = list(G.neighbors(b))
             for i, a in enumerate(neighbors):
                 for c in neighbors[i + 1:]:
@@ -1156,19 +1179,19 @@ async def perform_transitive_inference(max_inferences: int):
                         continue
                     pair     = tuple(sorted([a, c]))
                     existing = edges_data.get(pair, 0.0)
-                    if existing > INFERENCE_GRAPH_MIN_WEIGHT * INFERRED_SCORE_PENALTY:
+                    # Nu re-adăugăm dacă există deja o conexiune directă sau inferată puternică
+                    if existing > TRANSITIVE_GRAPH_MIN_WEIGHT * TRANSITIVE_PENALTY_L2:
                         continue
                     w_ab     = G[a][b]["weight"]
                     w_bc     = G[b][c]["weight"]
-                    # FIX 2: fără bonus × 1.2
                     inferred = (w_ab * w_bc) ** 0.5
                     if inferred > INFERENCE_THRESHOLD["tranzitiv"]:
                         inferences.append((a, c, inferred, str(b), 2))
 
-        # Lanțuri de lungime 3 (A–B–C–D) — numai dacă avem puține inferențe de lungime 2
+        # ── Lanțuri de lungime 3: A–B–C–D ────────────────────────────────────
+        # Activate numai dacă lanțurile de lungime 2 nu umplu bugetul.
         if len(inferences) < max_inferences * 0.5:
-            nodes_list = candidate_nodes[:10]  # FIX: foarte limitat
-            for a in nodes_list:
+            for a in candidate_nodes[:12]:
                 for b in G.neighbors(a):
                     w_ab = G[a][b]["weight"]
                     for c in G.neighbors(b):
@@ -1180,10 +1203,9 @@ async def perform_transitive_inference(max_inferences: int):
                                 continue
                             pair     = tuple(sorted([a, d]))
                             existing = edges_data.get(pair, 0.0)
-                            if existing > INFERENCE_GRAPH_MIN_WEIGHT * INFERRED_SCORE_PENALTY * 0.8:
+                            if existing > TRANSITIVE_GRAPH_MIN_WEIGHT * TRANSITIVE_PENALTY_L3:
                                 continue
                             w_cd     = G[c][d]["weight"]
-                            # FIX 3: fără bonus × 1.5
                             inferred = (w_ab * w_bc * w_cd) ** (1 / 3)
                             if inferred > INFERENCE_THRESHOLD["tranzitiv"]:
                                 inferences.append((a, d, inferred, f"{b}→{c}", 3))
@@ -1193,10 +1215,10 @@ async def perform_transitive_inference(max_inferences: int):
         for a, c, w, via, length in inferences[:max_inferences]:
             pair = tuple(sorted([a, c]))
             if pair not in edges_data:
-                # FIX: penalizare mai mare pentru lanțuri lungi
-                penalty = INFERRED_SCORE_PENALTY if length == 2 else INFERRED_SCORE_PENALTY * 0.7
+                penalty = TRANSITIVE_PENALTY_L2 if length == 2 else TRANSITIVE_PENALTY_L3
                 edges_data[pair] = min(w * penalty, 10.0)
-                edges_type[pair] = "inferred"
+                # Tip distinct față de inferențele hibrid — decay mai agresiv (0.70 vs 0.75)
+                edges_type[pair] = "inferred_tranzitiv"
                 posts_history.append({
                     "type":       "tranzitiv",
                     "ch1":        a,
@@ -1543,9 +1565,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     new_mode = cmd.get("mode", "hibrid")
                     if new_mode in ("direct", "hibrid", "tranzitiv"):
                         similarity_mode = new_mode
-                        # FIX: la schimbarea modului, ștergem NUMAI muchiile inférate,
+                        # La schimbarea modului, ștergem NUMAI muchiile inférate,
                         # păstrând relațiile directe confirmate semantic.
-                        inferred_pairs = [p for p, t in edges_type.items() if t == "inferred"]
+                        inferred_pairs = [
+                            p for p, t in edges_type.items()
+                            if t in ("inferred_hibrid", "inferred_tranzitiv")
+                        ]
                         for p in inferred_pairs:
                             edges_data.pop(p, None)
                             edges_type.pop(p, None)
@@ -1970,7 +1995,8 @@ async def background_analyzer():
                 if remaining > 5:
                     await perform_transitive_inference(min(remaining // 3, 50))
 
-            # Eliminăm muchiile moarte
+            # Eliminăm muchiile moarte — pragul 0.15 se aplică tuturor tipurilor.
+            # Inferențele tranzitive (decay 0.70) ating pragul mai repede decât cele hibrid (0.75).
             dead = [p for p, s in edges_data.items() if s < 0.15]
             for p in dead:
                 edges_data.pop(p, None)
@@ -2043,14 +2069,20 @@ async def background_analyzer():
             f_edges = []
             for k, v in edges_data.items():
                 if k[0] in displayed and k[1] in displayed:
-                    etype    = edges_type.get(k, "direct")
+                    etype     = edges_type.get(k, "direct")
                     cum_score = cumulative_scores.get(k, cumulative_scores.get((k[1], k[0]), 0.0))
+                    if etype == "inferred_tranzitiv":
+                        etype_label = "inferată tranzitiv"
+                    elif etype == "inferred_hibrid":
+                        etype_label = "inferată hibrid"
+                    else:
+                        etype_label = "directă"
                     f_edges.append({
                         "from":  k[0],
                         "to":    k[1],
                         "value": round(cum_score if cum_score > 0 else v, 3),
                         "title": (f"Sesiune: {v:.2f} | Cumulativ: {cum_score:.2f} "
-                                  f"({'inferată' if etype == 'inferred' else 'directă'})"),
+                                  f"({etype_label})"),
                         "type":  etype,
                     })
 
