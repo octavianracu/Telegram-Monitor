@@ -75,15 +75,6 @@ async def get_nlp_status():
 async def get_narratives():
     """
     Returnează temele narative descoperite de BERTopic și profilul fiecărui canal.
-    Folosit de UI pentru a afișa ce narativ promovează fiecare canal și comunitate.
-
-    Răspuns:
-    {
-      "topics": [{"topic_id": 0, "keywords": ["moldova", "alegeri", ...], "size": 12}],
-      "channels": {"@canal": {"dominant_topic": 0, "topic_distribution": {"0": 0.8, "1": 0.2}}},
-      "last_run": "2024-01-15T14:30:00",
-      "total_channels_profiled": 198
-    }
     """
     profiles = await asyncio.to_thread(db_get_all_narrative_profiles)
     topics   = await asyncio.to_thread(db_get_latest_topics)
@@ -99,6 +90,74 @@ async def get_narratives():
         "channels":                 channels_out,
         "last_run":                 _last_narrative_run.isoformat() if _last_narrative_run else None,
         "total_channels_profiled":  len(profiles),
+    }
+
+
+@app.get("/api/rebuild_profiles")
+async def rebuild_profiles():
+    """
+    Reconstruiește profilurile EMA pentru TOATE canalele care au mesaje în DB.
+
+    Util când:
+    - Codul narativ a fost adăugat după ce canalele aveau deja mesaje
+    - Profilurile lipsesc pentru canale care nu au primit mesaje noi recent
+    - /api/bimodal_export returnează prea puține noduri
+
+    Rulează în background — returnează imediat cu statusul inițial.
+    Progresul apare în consolă: [Profiles] canal X/N.
+    """
+    if not nlp_ready or similarity_model is None:
+        return {
+            "status":  "error",
+            "message": "Modelele NLP nu sunt încă gata. Așteaptă NLP: READY în UI.",
+        }
+
+    async def _rebuild():
+        channels = await asyncio.to_thread(db_get_all_channels)
+        total    = len(channels)
+        done     = 0
+        skipped  = 0
+        for ch in channels:
+            # rebuild_narrative_profile_for_channel folosește fereastra de 3 zile
+            # și nu depinde de embeddings zilnice existente — funcționează la prima rulare
+            await asyncio.to_thread(rebuild_narrative_profile_for_channel, ch)
+            done += 1
+            if done % 10 == 0:
+                logger.info(f"[Profiles] Reconstruite {done}/{total} profile EMA")
+        profiles_count = len(await asyncio.to_thread(db_get_all_narrative_profiles))
+        logger.info(f"[Profiles] Complet: {profiles_count}/{total} profile EMA în DB.")
+
+    asyncio.create_task(_rebuild())
+    channels_count = len(await asyncio.to_thread(db_get_all_channels))
+    return {
+        "status":   "started",
+        "message":  f"Reconstruiesc profile EMA pentru {channels_count} canale în background.",
+        "note":     "Verifică progresul în consolă. După finalizare rulează /api/run_bertopic.",
+    }
+
+
+@app.get("/api/run_bertopic")
+async def run_bertopic_now():
+    """
+    Forțează rularea imediată a BERTopic, fără să aștepte intervalul de 24h.
+    Util după /api/rebuild_profiles pentru a genera temele narative imediat.
+    """
+    if not nlp_ready or similarity_model is None:
+        return {"status": "error", "message": "Modelele NLP nu sunt gata."}
+
+    profiles = await asyncio.to_thread(db_get_all_narrative_profiles)
+    if len(profiles) < 5:
+        return {
+            "status":  "error",
+            "message": f"Prea puține profile ({len(profiles)}). "
+                       f"Rulează mai întâi /api/rebuild_profiles.",
+        }
+
+    asyncio.create_task(asyncio.to_thread(run_narrative_clustering))
+    return {
+        "status":  "started",
+        "message": f"BERTopic pornit pe {len(profiles)} canale în background.",
+        "note":    "Verifică consolă pentru progres. Durează 1-5 minute.",
     }
 
 
@@ -806,7 +865,7 @@ def update_narrative_profile_for_channel(channel: str):
         clean = [clean_text(t) for t in recent if len(clean_text(t)) > 10]
         if not clean:
             return
-        embs   = similarity_model.encode(clean, show_progress_bar=False)
+        embs    = similarity_model.encode(clean, show_progress_bar=False)
         day_emb = embs.mean(axis=0)
         db_update_daily_embedding(channel, today, day_emb, len(clean))
         ema = compute_channel_ema(channel)
@@ -814,6 +873,41 @@ def update_narrative_profile_for_channel(channel: str):
             db_update_narrative_profile(channel, ema)
     except Exception as e:
         logger.warning(f"[Narrative] Profil eșuat {channel}: {e}")
+
+
+def rebuild_narrative_profile_for_channel(channel: str):
+    """
+    Versiune de rebuild complet — ignoră embeddings zilnice existente și
+    calculează profilul direct din toate mesajele disponibile în fereastra
+    de ANALYSIS_WINDOW_DAYS zile.
+
+    Diferențe față de update_narrative_profile_for_channel:
+    - Folosește days=ANALYSIS_WINDOW_DAYS (3 zile) în loc de days=1
+    - Nu depinde de channel_daily_embeddings existente
+    - Salvează embeddings zilnice pentru ziua curentă ca punct de start
+    - Funcționează și la prima rulare când DB-ul narativ e gol
+    """
+    if similarity_model is None or not nlp_ready:
+        return
+    try:
+        msgs = db_get_recent_messages(channel, days=ANALYSIS_WINDOW_DAYS)
+        if not msgs:
+            return
+        clean = [clean_text(t) for t in msgs if len(clean_text(t)) > 10]
+        if not clean:
+            return
+        embs    = similarity_model.encode(clean, show_progress_bar=False)
+        profile_emb = embs.mean(axis=0)
+
+        # Salvăm și ca embedding zilnic pentru ziua curentă
+        today = datetime.now().strftime("%Y-%m-%d")
+        db_update_daily_embedding(channel, today, profile_emb, len(clean))
+
+        # Salvăm direct ca profil EMA — la rebuild nu avem istoric zilnic
+        # suficient pentru EMA reală, deci folosim media directă ca aproximare
+        db_update_narrative_profile(channel, profile_emb)
+    except Exception as e:
+        logger.warning(f"[Narrative] Rebuild profil eșuat {channel}: {e}")
 
 
 # ─────────────────────────────────────────────
