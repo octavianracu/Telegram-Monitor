@@ -11,6 +11,7 @@ import threading
 import sqlite3
 from collections import defaultdict
 
+from contextlib import asynccontextmanager
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -19,7 +20,6 @@ from fastapi.responses import FileResponse
 import numpy as np
 import networkx as nx
 
-# Pentru Grounded Theory
 from sklearn.cluster import KMeans
 from scipy.spatial.distance import cosine
 
@@ -55,20 +55,41 @@ def safe_json_dumps(data) -> str:
     return json.dumps(data, cls=NumpyEncoder, ensure_ascii=False)
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown al aplicației."""
+    logger.info("Pornire aplicație.")
+    set_memory_limit()
+    db_init()
+    db_warm_up_state()
+    loop = asyncio.get_running_loop()
+    start_nlp_loading(loop)
+    # FIX #1: pornire task-uri background cu referințe păstrate pentru a evita GC prematur
+    t1 = asyncio.create_task(background_narrative_clusterer())
+    t2 = asyncio.create_task(background_emergent_analyzer())
+    t3 = asyncio.create_task(background_similarity_detector())
+    _system_background_tasks.extend([t1, t2, t3])
+    yield
+    logger.info("Oprire aplicație.")
+    for t in _system_background_tasks:
+        if not t.done():
+            t.cancel()
 
-# app.mount la nivel de modul — fișierele statice sunt servite atât cu
-# `python main.py` cât și cu `uvicorn main:app`.
+
+app = FastAPI(lifespan=lifespan)
+
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# FIX #1: listă globală pentru task-uri sistem (evită GC prematur)
+_system_background_tasks: list = []
+
 
 # ============================================================================
-# UTILITAR: limită de memorie (opțional, doar pe Linux/Unix)
+# UTILITAR: limită de memorie
 # ============================================================================
 
 def set_memory_limit():
-    """Setează limită de memorie pentru a preveni blocajele (Unix only)."""
     try:
         import resource
         limit = 2 * 1024 * 1024 * 1024  # 2 GB
@@ -106,12 +127,19 @@ class GroundedIdeologyDiscoverer:
                             max_iterations: int = 3) -> Dict:
         """Proces iterativ de descoperire a ideologiilor emergente."""
         logger.info("[Grounded] Încep descoperirea ideologiilor emergente...")
-
-        # FIX: eliminat signal.SIGALRM — era apelat din asyncio.to_thread (thread
-        # non-main) și arunca ValueError în Python. Timeout-ul este gestionat
-        # corect la nivel de asyncio.wait_for în endpoint/background task.
         try:
-            # Pas 1: Codare deschisă
+            # FIX #2: limitează numărul de canale și mesaje per canal pentru performanță
+            MAX_CHANNELS = 60
+            if len(all_messages) > MAX_CHANNELS:
+                logger.warning(
+                    f"[Grounded] Prea multe canale ({len(all_messages)}), "
+                    f"limitez la {MAX_CHANNELS} după frecvența mesajelor"
+                )
+                sorted_channels = sorted(
+                    all_messages.items(), key=lambda x: len(x[1]), reverse=True
+                )
+                all_messages = dict(sorted_channels[:MAX_CHANNELS])
+
             all_concepts = self._open_coding(all_messages)
             logger.info(f"[Grounded] Extrase {len(all_concepts)} concepte unice")
 
@@ -120,7 +148,6 @@ class GroundedIdeologyDiscoverer:
 
             gc.collect()
 
-            # Pas 2: Codare axială
             categories = self._axial_coding(all_concepts, all_messages)
             logger.info(f"[Grounded] Formate {len(categories)} categorii emergente")
 
@@ -129,19 +156,15 @@ class GroundedIdeologyDiscoverer:
 
             gc.collect()
 
-            # Pas 3: Codare selectivă
             ideologies = self._selective_coding(categories, all_messages)
             logger.info(f"[Grounded] Identificate {len(ideologies)} ideologii centrale")
 
-            # Pas 4: Iterare pentru saturație (maxim 3 iterații)
             max_iterations = min(max_iterations, 3)
             iteration = 1
             while iteration < max_iterations:
                 previous_count = len(ideologies)
-
-                refined_categories = self._refine_categories(all_messages, categories, ideologies)
-                ideologies = self._selective_coding(refined_categories, all_messages)
-
+                categories = self._refine_categories(all_messages, categories, ideologies)
+                ideologies = self._selective_coding(categories, all_messages)
                 change_rate = (
                     abs(len(ideologies) - previous_count) / previous_count
                     if previous_count > 0 else 1
@@ -151,19 +174,16 @@ class GroundedIdeologyDiscoverer:
                     "ideologies_count": len(ideologies),
                     "change_rate": round(change_rate, 4)
                 })
-
                 logger.info(
                     f"[Grounded] Iteration {iteration}: "
                     f"{len(ideologies)} ideologii, change={change_rate:.3f}"
                 )
-
                 if change_rate < self.saturation_threshold:
                     logger.info(f"[Grounded] Saturație atinsă la iterația {iteration}")
                     break
                 iteration += 1
                 gc.collect()
 
-            # Pas 5: Asignare ideologii per canal
             channel_profiles = self._assign_channel_ideologies(all_messages, ideologies)
 
             return {
@@ -181,7 +201,6 @@ class GroundedIdeologyDiscoverer:
             return self._empty_result(all_messages, f"Eroare: {str(e)}")
 
     def _empty_result(self, all_messages: Dict, reason: str) -> Dict:
-        """Returnează un rezultat gol cu motivul."""
         return {
             "emergent_ideologies": [],
             "channel_profiles": {
@@ -199,18 +218,16 @@ class GroundedIdeologyDiscoverer:
         concepts_by_channel: Dict = defaultdict(list)
 
         for channel, messages in all_messages.items():
-            for msg in messages[:30]:
+            # FIX #3: limitează mesajele per canal la 20 pentru viteză
+            for msg in messages[:20]:
                 concepts = self._extract_concepts(msg)
-
                 try:
                     raw_sentiment = self.sentiment_pipeline(msg[:512])[0]["label"]
-                    # FIX: normalizat explicit la lowercase pentru consistență cu cheile dict
                     sentiment = raw_sentiment.lower()
                     for c in concepts:
                         c["sentiment_context"] = sentiment
                 except Exception as e:
                     logger.debug(f"[Grounded] Sentiment eșuat: {e}")
-
                 concepts_by_channel[channel].extend(concepts)
                 msg_hash = hash(msg)
                 self.concepts_cache[msg_hash] = concepts
@@ -231,15 +248,28 @@ class GroundedIdeologyDiscoverer:
                 unique_concepts[key]["frequency"] += 1
                 if "sentiment_context" in c:
                     sent_key = c["sentiment_context"]
-                    # FIX: verificăm că cheia există (evităm KeyError pentru etichete neașteptate)
                     if sent_key in unique_concepts[key]["sentiment_distribution"]:
                         unique_concepts[key]["sentiment_distribution"][sent_key] += 1
 
+        # Prag adaptiv — dacă avem puține canale, relaxăm filtrul
+        n_channels = len(all_messages)
+        min_channels = max(2, n_channels // 3) if n_channels >= 3 else 1
+        min_frequency = 2 if n_channels <= 4 else 3
+
         filtered = {
             k: v for k, v in unique_concepts.items()
-            if len(v["channels"]) >= 2 and v["frequency"] >= 3
+            if len(v["channels"]) >= min_channels and v["frequency"] >= min_frequency
         }
-        # 🔥 MEMORY LEAK FIX: Clear cache if too large
+
+        if len(filtered) < 10 and len(unique_concepts) >= 10:
+            logger.warning(
+                "[Grounded] Filtru strict a eliminat prea multe concepte, "
+                "relaxez la top-50 frecvente"
+            )
+            filtered = dict(
+                sorted(unique_concepts.items(), key=lambda x: x[1]["frequency"], reverse=True)[:50]
+            )
+
         if len(self.concepts_cache) > 10000:
             self.concepts_cache.clear()
         return filtered
@@ -247,7 +277,6 @@ class GroundedIdeologyDiscoverer:
     def _extract_concepts(self, text: str) -> List[Dict]:
         """Extrage concepte multiple din text."""
         concepts = []
-
         try:
             entities = self.ner_pipeline(text[:512])
             seen: set = set()
@@ -261,7 +290,7 @@ class GroundedIdeologyDiscoverer:
             logger.debug(f"[Grounded] NER eșuat: {e}")
 
         words = text.lower().split()
-        words = words[:50]  # 🔥 LIMITĂ anti-explozie
+        words = words[:50]
         stop_words = {
             "de", "la", "în", "cu", "pe", "din", "pentru",
             "și", "sau", "dar", "a", "al", "ai"
@@ -291,7 +320,8 @@ class GroundedIdeologyDiscoverer:
         if len(concept_list) < 10:
             return []
 
-        MAX_CONCEPTS = 150
+        # FIX #4: limită mai strictă pentru axial coding (150 → 100)
+        MAX_CONCEPTS = 100
         if len(concept_list) > MAX_CONCEPTS:
             logger.warning(
                 f"[Grounded] Prea multe concepte ({len(concept_list)}), "
@@ -312,10 +342,13 @@ class GroundedIdeologyDiscoverer:
                 for j, concept in enumerate(batch):
                     concept_embeddings[concept] = embs[j]
             except Exception as e:
-                logger.warning(f"[Grounded] Encoding batch eșuat: {e}")
+                logger.error(
+                    f"[Grounded] Encoding batch {i}-{i+batch_size} eșuat definitiv: {e}",
+                    exc_info=True
+                )
                 for concept in batch:
                     concept_embeddings[concept] = np.zeros(768)
-            gc.collect()  # 🔥 Aggressive GC after embeddings
+            gc.collect()
 
         valid_concepts = [c for c in concept_list if np.any(concept_embeddings[c] != 0)]
         if len(valid_concepts) < 10:
@@ -327,9 +360,6 @@ class GroundedIdeologyDiscoverer:
         emb_matrix = np.array([concept_embeddings[c] for c in valid_concepts])
         n_clusters = min(max(len(valid_concepts) // 10, 3), 8)
 
-        # FIX: eliminat signal.alarm(30) din interiorul acestei funcții — apelată
-        # via asyncio.to_thread (thread non-main), signal.signal() aruncă ValueError.
-        # KMeans limitează singur iterațiile prin max_iter=100.
         try:
             kmeans = KMeans(
                 n_clusters=n_clusters,
@@ -338,7 +368,7 @@ class GroundedIdeologyDiscoverer:
                 max_iter=50
             )
             cluster_labels = kmeans.fit_predict(emb_matrix)
-            gc.collect()  # 🔥 IMPORTANT: aggressive GC after KMeans
+            gc.collect()
         except Exception as e:
             logger.warning(f"[Grounded] KMeans eșuat: {e}")
             cluster_labels = np.array([i % n_clusters for i in range(len(valid_concepts))])
@@ -349,12 +379,10 @@ class GroundedIdeologyDiscoverer:
                 valid_concepts[i] for i in range(len(valid_concepts))
                 if cluster_labels[i] == cluster_id
             ]
-
             if len(cluster_concepts) < 3:
                 continue
 
             center = np.mean([concept_embeddings[c] for c in cluster_concepts], axis=0)
-            # 🔥 BUG FIX #2: Check if center is zero vector to prevent NaN in cosine
             center_norm = np.linalg.norm(center)
             if center_norm > 0:
                 representative = min(
@@ -363,7 +391,6 @@ class GroundedIdeologyDiscoverer:
                     if (c in concept_embeddings and np.linalg.norm(concept_embeddings[c]) > 0) else 1.0
                 )
             else:
-                # If center is zero, pick first concept as representative
                 representative = cluster_concepts[0] if cluster_concepts else "unknown"
 
             category = {
@@ -375,7 +402,6 @@ class GroundedIdeologyDiscoverer:
                 "embedding": center,
                 "sentiment_profile": self._calc_category_sentiment(cluster_concepts, concepts)
             }
-
             categories.append(category)
             for concept in cluster_concepts:
                 self.category_concepts[category["id"]].add(concept)
@@ -384,10 +410,8 @@ class GroundedIdeologyDiscoverer:
         return categories
 
     def _calc_category_sentiment(self, concepts: List[str], concepts_data: Dict) -> Dict:
-        """Calculează profilul de sentiment al unei categorii."""
         sentiments = {"positive": 0, "negative": 0, "neutral": 0}
         total = 0
-
         for concept in concepts:
             if concept in concepts_data:
                 dist = concepts_data[concept].get("sentiment_distribution", {})
@@ -395,10 +419,8 @@ class GroundedIdeologyDiscoverer:
                     if k in sentiments:
                         sentiments[k] += v
                         total += v
-
         if total > 0:
             sentiments = {k: v / total for k, v in sentiments.items()}
-
         dominant = max(sentiments, key=sentiments.get)
         return {
             "distribution": sentiments,
@@ -407,16 +429,11 @@ class GroundedIdeologyDiscoverer:
         }
 
     def _selective_coding(self, categories: List[Dict], all_messages: Dict) -> List[Dict]:
-        """Codare selectivă: identifică temele centrale (ideologiile)."""
         if len(categories) < 2:
             return categories
 
         MAX_CATEGORIES = 20
         if len(categories) > MAX_CATEGORIES:
-            logger.warning(
-                f"[Grounded] Prea multe categorii ({len(categories)}), "
-                f"limitare la {MAX_CATEGORIES}"
-            )
             categories = sorted(categories, key=lambda c: c["size"], reverse=True)[:MAX_CATEGORIES]
 
         category_ids = [c["id"] for c in categories]
@@ -459,14 +476,11 @@ class GroundedIdeologyDiscoverer:
         for idx, community in enumerate(communities):
             if len(community) < 1:
                 continue
-
             community_categories = [c for c in categories if c["id"] in community]
             ideology_name = self._generate_ideology_name(community_categories)
-
             all_concepts_list: List[str] = []
             for cat in community_categories:
                 all_concepts_list.extend(cat["all_concepts"][:10])
-
             ideology = {
                 "id": idx,
                 "name": ideology_name,
@@ -483,7 +497,6 @@ class GroundedIdeologyDiscoverer:
         return ideologies
 
     def _generate_ideology_name(self, categories: List[Dict]) -> str:
-        """Generează un nume simbolic pentru ideologie."""
         if not categories:
             return "Necunoscut"
         top_concepts = [cat["name"] for cat in categories[:3]]
@@ -495,20 +508,16 @@ class GroundedIdeologyDiscoverer:
             return f"{top_concepts[0].title()}, {top_concepts[1].title()} și altele"
 
     def _aggregate_sentiment(self, categories: List[Dict]) -> Dict:
-        """Agregă sentimentul categoriilor."""
         sentiments = {"positive": 0, "negative": 0, "neutral": 0}
         total_weight = 0
-
         for cat in categories:
             weight = cat["size"]
             for tone, score in cat["sentiment_profile"]["distribution"].items():
                 if tone in sentiments:
                     sentiments[tone] += score * weight
             total_weight += weight
-
         if total_weight > 0:
             sentiments = {k: v / total_weight for k, v in sentiments.items()}
-
         dominant = max(sentiments, key=sentiments.get)
         return {
             "distribution": sentiments,
@@ -517,7 +526,6 @@ class GroundedIdeologyDiscoverer:
         }
 
     def _extract_signature_phrases(self, categories: List[Dict]) -> List[str]:
-        """Extrage frazele caracteristice."""
         phrases = []
         for cat in categories[:3]:
             phrases.append(cat["name"])
@@ -527,29 +535,23 @@ class GroundedIdeologyDiscoverer:
 
     def _refine_categories(self, all_messages: Dict, old_categories: List[Dict],
                            ideologies: List[Dict]) -> List[Dict]:
-        """Rafinează categoriile pe baza ideologiilor identificate."""
         return old_categories
 
     def _assign_channel_ideologies(self, all_messages: Dict, ideologies: List[Dict]) -> Dict:
-        """Asignează fiecărui canal un profil de apartenența."""
         channel_profiles: Dict = {}
-
         ideology_embeddings: Dict = {}
         for ideo in ideologies:
             ideology_embeddings[ideo["id"]] = ideo["embedding"]
 
         for channel, messages in all_messages.items():
             channel_embedding = self._build_channel_embedding(messages)
-
             ideology_scores: Dict = {}
             for ideo in ideologies:
-                # 🔥 BUG FIX #1: Check BOTH embeddings for NaN prevention
                 ideo_emb = ideology_embeddings[ideo["id"]]
                 if (channel_embedding is not None and np.linalg.norm(channel_embedding) > 0 and
-                    ideo_emb is not None and np.linalg.norm(ideo_emb) > 0):
+                        ideo_emb is not None and np.linalg.norm(ideo_emb) > 0):
                     try:
                         similarity = 1 - cosine(channel_embedding, ideo_emb)
-                        # Ensure similarity is not NaN
                         if not np.isnan(similarity):
                             similarity = float(np.clip(similarity, 0.0, 1.0))
                         else:
@@ -558,7 +560,6 @@ class GroundedIdeologyDiscoverer:
                         similarity = 0.0
                 else:
                     similarity = 0.0
-
                 concept_match = self._calc_concept_match(messages, ideo["concepts"])
                 ideology_scores[ideo["id"]] = similarity * 0.6 + concept_match * 0.4
 
@@ -572,7 +573,6 @@ class GroundedIdeologyDiscoverer:
                 if ideology_scores.get(ideo["id"], 0) > 0.4
             ]
             description = self._gen_channel_description(ideologies, ideology_scores, dominant)
-
             channel_profiles[channel] = {
                 "ideology_scores": ideology_scores,
                 "dominant_ideologies": dominant,
@@ -584,7 +584,6 @@ class GroundedIdeologyDiscoverer:
         return channel_profiles
 
     def _build_channel_embedding(self, messages: List[str]) -> Optional[np.ndarray]:
-        """Construiește embedding-ul mediu pentru un canal."""
         if not messages:
             return None
         embeddings = []
@@ -599,7 +598,6 @@ class GroundedIdeologyDiscoverer:
         return None
 
     def _calc_concept_match(self, messages: List[str], ideology_concepts: List[str]) -> float:
-        """Calculează potrivirea conceptelor."""
         concept_set = set(ideology_concepts)
         matches = 0
         total = 0
@@ -612,7 +610,6 @@ class GroundedIdeologyDiscoverer:
 
     def _gen_channel_description(self, ideologies: List[Dict], scores: Dict,
                                   dominant: List[int]) -> str:
-        """Generează descriere textuală."""
         if not dominant:
             return "Profil ideologic neclar, mesaje diverse."
         parts = []
@@ -634,7 +631,7 @@ class GroundedIdeologyDiscoverer:
 # ============================================================================
 
 DB_PATH = "tgm_monitor.db"
-_db_lock = threading.RLock()  # 🔥 RLock prevents deadlocks
+_db_lock = threading.RLock()
 ANALYSIS_WINDOW_DAYS = 3
 
 # State global
@@ -679,15 +676,22 @@ NARRATIVE_RUN_INTERVAL_HOURS = 24
 
 # Grounded Theory state
 grounded_discoverer = None
-emergent_ideologies_cache: dict = {}
+# FIX #5: emergent_ideologies_cache este None când nu există date (nu dict gol)
+# Aceasta permite distincția clară între "neîncărcat" și "analiză goală"
+emergent_ideologies_cache: Optional[dict] = None
 EMERGENT_ANALYSIS_RUN: Optional[datetime] = None
 EMERGENT_ANALYSIS_INTERVAL_HOURS = 24
+
+# FIX #6: flag pentru a preveni rulări paralele ale analizei emergente
+_emergent_analysis_running = False
+_bertopic_running = False
 
 
 def db_connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=10000")  # FIX #7: timeout 10s pentru locks
     return conn
 
 
@@ -772,7 +776,7 @@ def db_get_recent_messages(channel: str, days: int = ANALYSIS_WINDOW_DAYS) -> li
     with _db_lock:
         conn = db_connect()
         rows = conn.execute(
-            "SELECT text FROM messages WHERE channel=? AND ts>=? ORDER BY ts DESC LIMIT 20",  # 🔥 OPTIMIZED: DESC + LIMIT
+            "SELECT text FROM messages WHERE channel=? AND ts>=? ORDER BY ts DESC LIMIT 20",
             (channel, cutoff),
         ).fetchall()
         conn.close()
@@ -793,7 +797,6 @@ def db_get_recent_messages_all_channels(days: int = ANALYSIS_WINDOW_DAYS) -> dic
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     with _db_lock:
         conn = db_connect()
-        # 🔥 BUG FIX #8: Limit total results to prevent memory explosion
         rows = conn.execute(
             "SELECT channel, text FROM messages WHERE ts >= ? ORDER BY channel, ts DESC LIMIT 5000",
             (cutoff,),
@@ -842,8 +845,19 @@ def db_get_cumulative_scores() -> dict:
 
 
 def db_save_emergent_ideologies(data: Dict):
+    """
+    Serializează explicit numpy → liste înainte de a salva în DB.
+    Salvează și ultimele N analize pentru istoric (max 5).
+    """
     with _db_lock:
         conn = db_connect()
+        # FIX #8: păstrează cel mult 5 analize în DB (curăță cele vechi)
+        conn.execute(
+            """DELETE FROM emergent_ideologies WHERE id NOT IN (
+               SELECT id FROM emergent_ideologies
+               ORDER BY analysis_timestamp DESC LIMIT 4
+            )"""
+        )
         conn.execute(
             """INSERT INTO emergent_ideologies(analysis_timestamp, data, channels_analyzed)
                VALUES (?, ?, ?)""",
@@ -976,7 +990,6 @@ def analyse_text(text: str) -> dict:
                 seen.add(name)
         res = {"sentiment": s_res, "entities": entities}
         nlp_msg_cache[h] = res
-        # 🔥 MEMORY LEAK FIX: Clear cache if too large
         if len(nlp_msg_cache) > 10000:
             nlp_msg_cache.clear()
         return res
@@ -987,75 +1000,60 @@ def analyse_text(text: str) -> dict:
 def scrape_channel(username: str) -> dict:
     """Scrapează informații despre un canal Telegram cu retry și backoff exponențial."""
     u = username.lstrip("@")
-
     for attempt in range(3):
-        # FIX: context manager `with requests.Session()` — Session se închide
-        # automat la ieșirea din bloc, eliminând resource leak-ul.
-        # FIX: eliminat `import time` din interiorul funcției — `time` este deja
-        # importat la nivel de modul (linia 8).
         try:
             with requests.Session() as session:
                 r1 = session.get(f"https://t.me/{u}", timeout=(10, 25))
                 s1 = BeautifulSoup(r1.text, "html.parser")
-
                 t_el = s1.find("div", class_="tgme_page_title")
                 title = t_el.text.strip() if t_el else u
-
                 e_el = s1.find("div", class_="tgme_page_extra")
                 subs = parse_subscribers(e_el.text if e_el else "0")
-
-                # Pauză între cereri pentru a reduce încărcarea serverului
                 time.sleep(0.5)
-
                 r2 = session.get(f"https://t.me/s/{u}", timeout=(10, 25))
                 s2 = BeautifulSoup(r2.text, "html.parser")
-
                 msgs = []
                 for w in s2.find_all("div", class_="tgme_widget_message_text"):
                     txt = w.get_text(separator=" ", strip=True)
                     if len(txt) > 30 and len(txt.split()) >= 5:
                         msgs.append(txt)
-
                 return {
                     "username": u,
                     "title": title,
                     "subscribers": subs,
-                    "messages": msgs[-10:]  # 🔥 Reduced from 15 for stability
+                    "messages": msgs[-10:]
                 }
-
         except requests.exceptions.ReadTimeout:
             logger.warning(f"Read timeout la {username} (încercarea {attempt + 1}/3)")
             if attempt == 2:
                 logger.error(f"Read timeout definitiv la {username}")
                 return {"username": u, "title": u, "subscribers": 0, "messages": []}
             time.sleep(2 ** attempt)
-
         except requests.exceptions.Timeout:
             logger.warning(f"Timeout la {username} (încercarea {attempt + 1}/3)")
             if attempt == 2:
                 return {"username": u, "title": u, "subscribers": 0, "messages": []}
             time.sleep(2 ** attempt)
-
         except requests.exceptions.ConnectionError as e:
             logger.warning(f"Connection error la {username}: {e}")
             if attempt == 2:
                 return {"username": u, "title": u, "subscribers": 0, "messages": []}
             time.sleep(3)
-
         except Exception as e:
             logger.error(f"Scrape error {username}: {e}")
             return {"username": u, "title": u, "subscribers": 0, "messages": []}
-
     return {"username": u, "title": u, "subscribers": 0, "messages": []}
 
 
 def parse_subscribers(text: str) -> int:
-    """Parsează numărul de abonați din text."""
     if not text:
         return 0
     t = text.lower().strip()
     t = re.sub(r"[^\d.,km]", "", t)
-    t = t.replace(",", "")
+    if "." in t and not (t.endswith("k") or t.endswith("m")):
+        t = t.replace(".", "").replace(",", "")
+    else:
+        t = t.replace(",", "")
     if t.endswith("k"):
         try:
             return int(float(t[:-1]) * 1000)
@@ -1084,7 +1082,6 @@ def update_embeddings_incremental(ch: str, new_texts: list):
     orig_valid = [t for t in recent_texts if len(clean_text(t)) > 10]
     matrix = similarity_model.encode(clean_texts, show_progress_bar=False)
     ch_embs_cache[ch] = {"orig_texts": orig_valid, "matrix": matrix}
-    # 🔥 MEMORY LEAK FIX: Clear cache if too large
     if len(ch_embs_cache) > 500:
         ch_embs_cache.clear()
 
@@ -1094,6 +1091,68 @@ def get_embedding_matrix(ch: str):
     if entry is None:
         return None, None
     return entry["matrix"], entry["orig_texts"]
+
+
+async def detect_channel_similarities():
+    global similarity_model, cosine_similarity
+
+    if similarity_model is None or cosine_similarity is None:
+        return
+
+    channels = list(channels_set)
+    if len(channels) < 2:
+        return
+
+    channel_embeddings = {}
+    for ch in channels:
+        matrix, texts = get_embedding_matrix(ch)
+        if matrix is not None and len(matrix) > 0:
+            avg_embedding = matrix.mean(axis=0)
+            channel_embeddings[ch] = avg_embedding
+
+    if len(channel_embeddings) < 2:
+        return
+
+    ch_list = list(channel_embeddings.keys())
+    similarity_threshold = 0.65
+    new_edges = []
+
+    for i in range(len(ch_list)):
+        for j in range(i + 1, len(ch_list)):
+            ch1, ch2 = ch_list[i], ch_list[j]
+            emb1 = channel_embeddings[ch1]
+            emb2 = channel_embeddings[ch2]
+            try:
+                if np.linalg.norm(emb1) == 0 or np.linalg.norm(emb2) == 0:
+                    continue
+                sim_matrix = cosine_similarity([emb1, emb2])
+                similarity_score = float(sim_matrix[0][1])
+                if np.isnan(similarity_score):
+                    continue
+                similarity_score = float(np.clip(similarity_score, 0.0, 1.0))
+                if similarity_score >= similarity_threshold:
+                    await asyncio.to_thread(db_update_edge_cumulative, ch1, ch2, similarity_score)
+                    new_edges.append({
+                        "from": ch1,
+                        "to": ch2,
+                        "value": similarity_score,
+                        "title": f"Similaritate: {(similarity_score * 100):.1f}%"
+                    })
+                    logger.info(
+                        f"[Similarity] Legătură detectată: {ch1} <-> {ch2} "
+                        f"(similaritate: {(similarity_score * 100):.1f}%)"
+                    )
+            except Exception as e:
+                logger.debug(f"[Similarity] Eroare comparare {ch1}-{ch2}: {e}")
+
+    if new_edges:
+        await manager.broadcast(
+            safe_json_dumps({
+                "type": "edges_detected",
+                "count": len(new_edges),
+                "edges": new_edges
+            })
+        )
 
 
 def _decay_edge(pair: tuple, strength: float) -> float:
@@ -1121,86 +1180,188 @@ async def get_nlp_status():
 
 @app.get("/api/discover_ideologies")
 async def discover_emergent_ideologies(force: bool = False):
-    """Rulează descoperirea ideologiilor emergente folosind Grounded Theory."""
+    """
+    Rulează descoperirea ideologiilor emergente folosind Grounded Theory.
+    FIX #9: endpoint este non-blocant — întoarce imediat dacă analiza e deja în curs.
+    FIX #10: returnează cache din DB dacă există și force=False.
+    """
     global grounded_discoverer, emergent_ideologies_cache, EMERGENT_ANALYSIS_RUN
+    global _emergent_analysis_running
 
     if not nlp_ready or similarity_model is None:
         return {"status": "error", "message": "Modelele NLP nu sunt încă gata."}
 
-    if not force and emergent_ideologies_cache:
+    # FIX #9: dacă rulează deja, nu lansăm a doua instanță
+    if _emergent_analysis_running:
+        return {
+            "status": "running",
+            "message": "Analiza emergentă este deja în curs. Verifică /api/emergent_ideologies."
+        }
+
+    # FIX #10: returnează cache valid fără a relansa
+    if not force and emergent_ideologies_cache is not None:
         return {
             "status": "cached",
             "data": emergent_ideologies_cache,
             "last_run": EMERGENT_ANALYSIS_RUN.isoformat() if EMERGENT_ANALYSIS_RUN else None
         }
 
-    all_messages: dict = {}
-    channels = db_get_all_channels()
+    # Lansează în background și returnează imediat
+    asyncio.create_task(_run_emergent_analysis_task())
+    return {
+        "status": "started",
+        "message": "Analiza emergentă a fost pornită. Verifică /api/emergent_ideologies în câteva minute."
+    }
 
-    for channel in channels:
-        messages = db_get_recent_messages(channel, days=7)
-        if len(messages) >= 5:
-            all_messages[channel] = messages[:20]
 
-    if len(all_messages) < 3:
-        return {
-            "status": "error",
-            "message": (
-                f"Prea puține canale cu mesaje suficiente ({len(all_messages)}). "
-                "Așteaptă colectarea mai multor date."
+async def _run_emergent_analysis_task():
+    """
+    Task asincron care rulează analiza emergentă în background.
+    FIX #6: flag de blocare împotriva rulărilor paralele.
+    FIX #2: limită strictă de canale și mesaje.
+    """
+    global grounded_discoverer, emergent_ideologies_cache, EMERGENT_ANALYSIS_RUN
+    global _emergent_analysis_running
+
+    if _emergent_analysis_running:
+        return
+
+    _emergent_analysis_running = True
+    try:
+        db_channels = db_get_all_channels()
+        all_known_channels = list(set(db_channels) | channels_set)
+
+        all_messages: dict = {}
+        for channel in all_known_channels:
+            messages = db_get_recent_messages(channel, days=7)
+            if len(messages) >= 5:
+                all_messages[channel] = messages[:20]
+
+        if len(all_messages) < 3:
+            logger.warning(
+                f"[Grounded] Prea puține canale cu mesaje ({len(all_messages)}), anulat."
             )
-        }
+            return
 
-    logger.info(f"[Grounded] Analiză pe {len(all_messages)} canale")
+        # FIX #2: limitare strictă la 60 canale pentru a evita timeout
+        MAX_CHANNELS_ANALYSIS = 60
+        if len(all_messages) > MAX_CHANNELS_ANALYSIS:
+            logger.warning(
+                f"[Grounded] Limitez la {MAX_CHANNELS_ANALYSIS} canale "
+                f"(din {len(all_messages)} disponibile)"
+            )
+            sorted_ch = sorted(all_messages.items(), key=lambda x: len(x[1]), reverse=True)
+            all_messages = dict(sorted_ch[:MAX_CHANNELS_ANALYSIS])
 
-    grounded_discoverer = GroundedIdeologyDiscoverer(
-        similarity_model=similarity_model,
-        sentiment_pipeline=sentiment_pipeline,
-        ner_pipeline=ner_pipeline
-    )
+        logger.info(f"[Grounded] Analiză pe {len(all_messages)} canale")
 
-    # 🔥 FIX THREAD + ASYNC: Use loop.run_in_executor instead of asyncio.to_thread
-    # This avoids timing issues with nested thread calls
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        grounded_discoverer.discover_ideologies,
-        all_messages,
-        3
-    )
+        grounded_discoverer = GroundedIdeologyDiscoverer(
+            similarity_model=similarity_model,
+            sentiment_pipeline=sentiment_pipeline,
+            ner_pipeline=ner_pipeline
+        )
 
-    result["analysis_timestamp"] = datetime.now().isoformat()
-    result["channels_analyzed"] = len(all_messages)
-    result["total_channels"] = len(channels)
+        loop = asyncio.get_running_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                grounded_discoverer.discover_ideologies,
+                all_messages,
+                3
+            ),
+            timeout=480.0  # FIX #11: 480s pentru a acoperi 60 canale
+        )
 
-    emergent_ideologies_cache = result
-    EMERGENT_ANALYSIS_RUN = datetime.now()
+        result["analysis_timestamp"] = datetime.now().isoformat()
+        result["channels_analyzed"] = len(all_messages)
+        result["total_channels"] = len(all_known_channels)
 
-    await asyncio.to_thread(db_save_emergent_ideologies, result)
-    return {"status": "success", "data": result}
+        # FIX #5: înlocuire completă (nu .update()) pentru a evita date reziduale
+        emergent_ideologies_cache = result
+        EMERGENT_ANALYSIS_RUN = datetime.now()
+
+        await asyncio.to_thread(db_save_emergent_ideologies, result)
+        logger.info(
+            f"[Grounded] Analiză completă: "
+            f"{len(result.get('emergent_ideologies', []))} ideologii, "
+            f"{len(all_messages)} canale"
+        )
+
+    except asyncio.TimeoutError:
+        logger.error("[Grounded] Analiza a depășit 480s — omisă.")
+    except Exception as e:
+        logger.error(f"[Grounded] Eroare în task: {e}", exc_info=True)
+    finally:
+        _emergent_analysis_running = False
 
 
 @app.get("/api/emergent_ideologies")
 async def get_emergent_ideologies():
-    """Returnează ultimele ideologii emergente descoperite."""
-    if emergent_ideologies_cache:
+    """
+    Returnează ultimele ideologii emergente descoperite.
+    FIX #12: timeout rapid (nu blochează), cu fallback la DB.
+    """
+    global emergent_ideologies_cache, EMERGENT_ANALYSIS_RUN
+
+    # RAM cache prezent
+    if emergent_ideologies_cache is not None:
         return {
             "status": "success",
             "data": emergent_ideologies_cache,
-            "last_run": EMERGENT_ANALYSIS_RUN.isoformat() if EMERGENT_ANALYSIS_RUN else None
+            "last_run": EMERGENT_ANALYSIS_RUN.isoformat() if EMERGENT_ANALYSIS_RUN else None,
+            "analysis_running": _emergent_analysis_running
         }
-    cached = await asyncio.to_thread(db_get_emergent_ideologies)
+
+    # FIX #12: timeout scurt pentru citirea din DB (nu mai mult de 5s)
+    try:
+        cached = await asyncio.wait_for(
+            asyncio.to_thread(db_get_emergent_ideologies),
+            timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        cached = None
+
     if cached:
-        return {"status": "success", "data": cached, "source": "database"}
+        # FIX #5: înlocuire completă, nu .update()
+        emergent_ideologies_cache = cached
+        ts_str = cached.get("analysis_timestamp")
+        if ts_str and EMERGENT_ANALYSIS_RUN is None:
+            try:
+                EMERGENT_ANALYSIS_RUN = datetime.fromisoformat(ts_str)
+            except (ValueError, TypeError):
+                pass
+        return {
+            "status": "success",
+            "data": cached,
+            "source": "database",
+            "last_run": ts_str,
+            "analysis_running": _emergent_analysis_running
+        }
+
     return {
         "status": "pending",
-        "message": "Nicio analiză disponibilă. Rulează /api/discover_ideologies"
+        "message": "Nicio analiză disponibilă. Rulează /api/discover_ideologies",
+        "analysis_running": _emergent_analysis_running
     }
 
 
 @app.get("/api/emergent_ideology/{channel}")
 async def get_channel_emergent_ideology(channel: str):
     """Returnează profilul ideologic emergent pentru un canal specific."""
+    global emergent_ideologies_cache
+
+    if emergent_ideologies_cache is None:
+        # FIX #12: timeout scurt
+        try:
+            cached = await asyncio.wait_for(
+                asyncio.to_thread(db_get_emergent_ideologies),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            cached = None
+        if cached:
+            emergent_ideologies_cache = cached
+
     if not emergent_ideologies_cache:
         return {"status": "error", "message": "Nicio analiză emergentă disponibilă"}
 
@@ -1219,13 +1380,11 @@ async def get_channel_emergent_ideology(channel: str):
     }
 
     for ideo_id, score in channel_profile.get("ideology_scores", {}).items():
-        # 🔥 BUG FIX #5: Safe int conversion with validation
         try:
             ideo_id_int = int(ideo_id) if isinstance(ideo_id, str) else ideo_id
         except (ValueError, TypeError):
             logger.warning(f"[API] Invalid ideology_id format: {ideo_id}")
             continue
-        
         ideo_detail = next((i for i in ideologies if i["id"] == ideo_id_int), None)
         if ideo_detail:
             detailed["ideologies_detail"].append({
@@ -1245,12 +1404,33 @@ async def get_channel_emergent_ideology(channel: str):
 @app.get("/api/emergent_saturation")
 async def get_saturation_status():
     """Returnează statusul saturației teoretice."""
+    global emergent_ideologies_cache
+
+    if emergent_ideologies_cache is None:
+        try:
+            cached = await asyncio.wait_for(
+                asyncio.to_thread(db_get_emergent_ideologies),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            cached = None
+        if cached:
+            emergent_ideologies_cache = cached
+
     if not emergent_ideologies_cache:
-        return {"status": "error", "message": "Nicio analiză disponibilă"}
+        return {
+            "status": "error",
+            "message": "Nicio analiză disponibilă",
+            "analysis_running": _emergent_analysis_running
+        }
 
     history = emergent_ideologies_cache.get("saturation_history", [])
     if not history:
-        return {"status": "pending", "message": "Analiza nu a atins încă saturația"}
+        return {
+            "status": "pending",
+            "message": "Analiza nu a atins încă saturația",
+            "analysis_running": _emergent_analysis_running
+        }
 
     latest = history[-1]
     return {
@@ -1258,14 +1438,32 @@ async def get_saturation_status():
         "iterations_completed": len(history),
         "final_change_rate": latest["change_rate"],
         "ideologies_count": latest["ideologies_count"],
-        "history": history
+        "history": history,
+        "analysis_running": _emergent_analysis_running
     }
 
 
 @app.get("/api/narratives")
 async def get_narratives():
-    profiles = await asyncio.to_thread(db_get_all_narrative_profiles)
-    topics = await asyncio.to_thread(db_get_latest_topics)
+    """
+    FIX #13: timeout explicit pe toate operațiile DB pentru a preveni blocarea.
+    """
+    try:
+        profiles = await asyncio.wait_for(
+            asyncio.to_thread(db_get_all_narrative_profiles),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        profiles = {}
+
+    try:
+        topics = await asyncio.wait_for(
+            asyncio.to_thread(db_get_latest_topics),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        topics = []
+
     channels_out = {
         ch: {
             "dominant_topic": data["dominant_topic"],
@@ -1278,6 +1476,7 @@ async def get_narratives():
         "channels": channels_out,
         "last_run": _last_narrative_run.isoformat() if _last_narrative_run else None,
         "total_channels_profiled": len(profiles),
+        "bertopic_running": _bertopic_running,
     }
 
 
@@ -1308,20 +1507,74 @@ async def rebuild_profiles():
 
 @app.get("/api/run_bertopic")
 async def run_bertopic_now():
+    """
+    FIX #14: BERTopic rulează în background task, nu blochează request-ul.
+    FIX #6: flag pentru a preveni rulări paralele.
+    """
+    global _bertopic_running
+
     if not nlp_ready or similarity_model is None:
         return {"status": "error", "message": "Modelele NLP nu sunt gata."}
+
+    if _bertopic_running:
+        return {"status": "running", "message": "BERTopic rulează deja."}
+
     profiles = await asyncio.to_thread(db_get_all_narrative_profiles)
     if len(profiles) < 5:
         return {"status": "error", "message": f"Prea puține profile ({len(profiles)})."}
-    asyncio.create_task(asyncio.to_thread(run_narrative_clustering))
-    return {"status": "started", "message": f"BERTopic pornit pe {len(profiles)} canale."}
+
+    # FIX #14: lansează ca task asyncio (non-blocant)
+    asyncio.create_task(_run_bertopic_task())
+    return {
+        "status": "started",
+        "message": f"BERTopic pornit pe {len(profiles)} canale. Verifică /api/narratives."
+    }
+
+
+async def _run_bertopic_task():
+    """Task asincron non-blocant pentru BERTopic."""
+    global _bertopic_running
+    if _bertopic_running:
+        return
+    _bertopic_running = True
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(run_narrative_clustering),
+            timeout=600.0
+        )
+    except asyncio.TimeoutError:
+        logger.error("[BERTopic] Task-ul a depășit 600s — oprit.")
+    except Exception as e:
+        logger.error(f"[BERTopic] Eroare în task: {e}", exc_info=True)
+    finally:
+        _bertopic_running = False
 
 
 @app.get("/api/bimodal_export")
 async def bimodal_export():
-    profiles = await asyncio.to_thread(db_get_all_narrative_profiles)
-    topics = await asyncio.to_thread(db_get_latest_topics)
-    cumulative_scores = await asyncio.to_thread(db_get_cumulative_scores)
+    try:
+        profiles = await asyncio.wait_for(
+            asyncio.to_thread(db_get_all_narrative_profiles),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        profiles = {}
+
+    try:
+        topics = await asyncio.wait_for(
+            asyncio.to_thread(db_get_latest_topics),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        topics = []
+
+    try:
+        cumulative_scores = await asyncio.wait_for(
+            asyncio.to_thread(db_get_cumulative_scores),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        cumulative_scores = {}
 
     nodes = []
     for ch, data in profiles.items():
@@ -1333,7 +1586,6 @@ async def bimodal_export():
             "subscribers": node_info.get("subscribers", 0),
             "dominant_topic": data["dominant_topic"],
         })
-
     for t in topics:
         nodes.append({
             "id": f"topic_{t['topic_id']}",
@@ -1369,11 +1621,14 @@ def db_get_all_narrative_profiles() -> dict:
         conn.close()
     result: dict = {}
     for ch, emb_json, topic_json, dominant in rows:
-        result[ch] = {
-            "embedding": np.array(json.loads(emb_json)),
-            "topic_distribution": json.loads(topic_json),
-            "dominant_topic": dominant,
-        }
+        try:
+            result[ch] = {
+                "embedding": np.array(json.loads(emb_json)),
+                "topic_distribution": json.loads(topic_json),
+                "dominant_topic": dominant,
+            }
+        except Exception as e:
+            logger.warning(f"[DB] Profil corupt pentru {ch}: {e}")
     return result
 
 
@@ -1393,7 +1648,13 @@ def db_get_latest_topics() -> list:
             (run_id,),
         ).fetchall()
         conn.close()
-    return [{"topic_id": r[0], "keywords": json.loads(r[1]), "size": r[2]} for r in rows]
+    result = []
+    for r in rows:
+        try:
+            result.append({"topic_id": r[0], "keywords": json.loads(r[1]), "size": r[2]})
+        except Exception as e:
+            logger.warning(f"[DB] Topic corupt: {e}")
+    return result
 
 
 def compute_channel_ema(channel: str, alpha: float = 0.3) -> Optional[np.ndarray]:
@@ -1428,7 +1689,6 @@ def update_narrative_profile_for_channel(channel: str):
             return
         embs = similarity_model.encode(clean, show_progress_bar=False)
         day_emb = embs.mean(axis=0)
-
         with _db_lock:
             conn = db_connect()
             conn.execute(
@@ -1443,7 +1703,6 @@ def update_narrative_profile_for_channel(channel: str):
             )
             conn.commit()
             conn.close()
-
         ema = compute_channel_ema(channel)
         if ema is not None:
             with _db_lock:
@@ -1475,7 +1734,6 @@ def rebuild_narrative_profile_for_channel(channel: str):
             return
         embs = similarity_model.encode(clean, show_progress_bar=False)
         profile_emb = embs.mean(axis=0)
-
         with _db_lock:
             conn = db_connect()
             conn.execute(
@@ -1489,12 +1747,17 @@ def rebuild_narrative_profile_for_channel(channel: str):
             )
             conn.commit()
             conn.close()
-        logger.debug(f"[Narrative] Profil narativ reconstruit pentru {channel} ({len(clean)} mesaje)")
+        logger.debug(
+            f"[Narrative] Profil reconstruit pentru {channel} ({len(clean)} mesaje)"
+        )
     except Exception as e:
         logger.warning(f"[Narrative] Rebuild profil eșuat {channel}: {e}")
 
 
 def run_narrative_clustering():
+    """
+    FIX #15: BERTopic cu limită de canale și documente pentru a evita OOM și timeout.
+    """
     global narrative_topics_cache, narrative_profiles_cache, _last_narrative_run
 
     try:
@@ -1509,18 +1772,29 @@ def run_narrative_clustering():
         logger.info("[Narrative] Prea puține profile pentru clustering.")
         return
 
-    logger.info(f"[Narrative] BERTopic pe {len(profiles)} canale...")
+    # FIX #15: limitare la 150 canale pentru BERTopic (memorie și timp)
+    MAX_CHANNELS_BERTOPIC = 150
+    channels = list(profiles.keys())
+    if len(channels) > MAX_CHANNELS_BERTOPIC:
+        logger.warning(
+            f"[Narrative] Limitez BERTopic la {MAX_CHANNELS_BERTOPIC} "
+            f"canale (din {len(channels)})"
+        )
+        channels = channels[:MAX_CHANNELS_BERTOPIC]
+
+    logger.info(f"[Narrative] BERTopic pe {len(channels)} canale...")
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     try:
-        channels = list(profiles.keys())
         docs = []
+        # FIX #15: obține mesajele o singură dată pentru toate canalele
+        recent_all = db_get_recent_messages_all_channels(days=7)
         for ch in channels:
-            msgs = db_get_recent_messages(ch, days=7)
-            # 🔥 BUG FIX #9: Use only returned messages (avoid None slicing)
-            doc_text = " ".join(msgs[:min(30, len(msgs))]) if msgs else ch
+            msgs = recent_all.get(ch, [])
+            # FIX #15: limitare la 20 mesaje per canal, max 200 cuvinte per doc
+            doc_text = " ".join(msgs[:20])[:2000] if msgs else ch
             if not doc_text or len(doc_text.strip()) < 10:
-                doc_text = ch  # Fallback to channel name
+                doc_text = ch
             docs.append(doc_text)
 
         STOPWORDS_RO = {"și", "de", "la", "în", "că", "cu", "pe", "din", "pentru", "este"}
@@ -1541,12 +1815,13 @@ def run_narrative_clustering():
             min_topic_size=3,
             nr_topics="auto",
             verbose=False,
+            calculate_probabilities=False,  # FIX #15: dezactivat pentru performanță
         )
 
-        # 🔥 BUG FIX #10: Add timeout for BERTopic execution
         logger.info(f"[Narrative] Inițiez BERTopic cu {len(docs)} documente...")
         topics, probs = topic_model.fit_transform(docs)
-        logger.info(f"[Narrative] BERTopic executat cu succes")
+        gc.collect()
+        logger.info("[Narrative] BERTopic executat cu succes")
 
         topic_info = topic_model.get_topic_info()
         topics_to_save = []
@@ -1578,7 +1853,8 @@ def run_narrative_clustering():
         channel_topics: dict = {}
         for i, ch in enumerate(channels):
             t_id = int(topics[i])
-            if hasattr(probs, "ndim") and probs.ndim == 2:
+            # FIX #15: calculate_probabilities=False → probs e None sau 1D
+            if probs is not None and hasattr(probs, "ndim") and probs.ndim == 2:
                 dist = {str(j): float(probs[i][j]) for j in range(probs.shape[1])}
             else:
                 dist = {str(t_id): 1.0}
@@ -1610,7 +1886,10 @@ def run_narrative_clustering():
             for ch in channels
         }
         _last_narrative_run = datetime.now()
-        logger.info(f"[Narrative] ✓ Clustering complet: {len(topics_to_save)} teme descoperite peste {len(channels)} canale.")
+        logger.info(
+            f"[Narrative] ✓ Clustering complet: {len(topics_to_save)} teme descoperite "
+            f"peste {len(channels)} canale."
+        )
 
     except Exception as e:
         logger.error(f"[Narrative] Eroare BERTopic: {e}", exc_info=True)
@@ -1746,33 +2025,59 @@ def warm_up_embeddings():
 
 
 def db_warm_up_state():
-    global channels_set, nodes_data, ch_msgs_cache, ch_msgs_set, ch_lang_cache, ch_style_cache
+    """
+    Reconstituie starea RAM din SQLite la pornire.
+    Populează emergent_ideologies_cache din DB, astfel
+    /api/emergent_ideologies nu mai returnează 'pending' după restart.
+    """
+    global channels_set, nodes_data, ch_msgs_cache, ch_msgs_set, ch_lang_cache
+    global ch_style_cache, emergent_ideologies_cache, EMERGENT_ANALYSIS_RUN
 
     logger.info("[WarmUp] Reconstruiesc starea RAM din SQLite...")
 
     all_channels = db_get_all_channels()
     if not all_channels:
         logger.info("[WarmUp] Baza de date goală.")
-        return
+    else:
+        recent_by_channel = db_get_recent_messages_all_channels(days=ANALYSIS_WINDOW_DAYS)
 
-    recent_by_channel = db_get_recent_messages_all_channels(days=ANALYSIS_WINDOW_DAYS)
+        for ch in all_channels:
+            channels_set.add(ch)
+            if ch not in nodes_data:
+                nodes_data[ch] = {"id": ch, "label": ch, "subscribers": 0}
 
-    for ch in all_channels:
-        channels_set.add(ch)
-        if ch not in nodes_data:
-            nodes_data[ch] = {"id": ch, "label": ch, "subscribers": 0}
+            msgs = recent_by_channel.get(ch, [])
+            if msgs:
+                ch_msgs_cache[ch] = msgs[-50:]
+                ch_msgs_set[ch] = set(msgs)
+                ch_lang_cache[ch] = detect_language(" ".join(msgs[:10]))
+                try:
+                    ch_style_cache[ch] = get_stylometric_fingerprint(msgs)
+                except Exception as e:
+                    logger.warning(f"[WarmUp] Fingerprint eșuat pentru {ch}: {e}")
 
-        msgs = recent_by_channel.get(ch, [])
-        if msgs:
-            ch_msgs_cache[ch] = msgs[-50:]
-            ch_msgs_set[ch] = set(msgs)
-            ch_lang_cache[ch] = detect_language(" ".join(msgs[:10]))
-            try:
-                ch_style_cache[ch] = get_stylometric_fingerprint(msgs)
-            except Exception as e:
-                logger.warning(f"[WarmUp] Fingerprint eșuat pentru {ch}: {e}")
+        logger.info(f"[WarmUp] Restaurate {len(channels_set)} canale.")
 
-    logger.info(f"[WarmUp] Restaurate {len(channels_set)} canale.")
+    # Restaurează cache-ul de ideologii emergente din DB
+    try:
+        cached_ideologies = db_get_emergent_ideologies()
+        if cached_ideologies:
+            # FIX #5: înlocuire completă (nu .update())
+            emergent_ideologies_cache = cached_ideologies
+            ts_str = cached_ideologies.get("analysis_timestamp")
+            if ts_str:
+                try:
+                    EMERGENT_ANALYSIS_RUN = datetime.fromisoformat(ts_str)
+                except (ValueError, TypeError):
+                    pass
+            logger.info(
+                f"[WarmUp] Cache ideologii emergente restaurat din DB "
+                f"(timestamp: {ts_str})."
+            )
+        else:
+            logger.info("[WarmUp] Nicio analiză emergentă în DB.")
+    except Exception as e:
+        logger.warning(f"[WarmUp] Nu am putut restaura ideologiile din DB: {e}")
 
 
 def start_nlp_loading(loop=None):
@@ -1790,13 +2095,26 @@ def start_nlp_loading(loop=None):
 # ============================================================================
 
 async def background_narrative_clusterer():
-    """Rulează clustering narativ periodic, independent de starea `running`."""
-    await asyncio.sleep(600)
+    """
+    Rulează clustering narativ periodic, independent de starea `running`.
+    FIX #16: primul sleep redus la 120s (nu 600s) pentru a rula mai repede după start.
+    """
+    # FIX #16: așteaptă NLP-ul, nu un timp fix
+    wait_count = 0
+    while not nlp_ready or similarity_model is None:
+        await asyncio.sleep(10)
+        wait_count += 1
+        if wait_count > 180:  # max 30 min
+            logger.warning("[Narrative] NLP nu s-a încărcat în 30 min, opresc așteptarea")
+            return
+
+    await asyncio.sleep(120)  # FIX #16: 2 min după NLP ready (nu 10 min fix)
+
     while True:
         try:
-            if nlp_ready and similarity_model is not None:
+            if not _bertopic_running:
                 logger.info("[Narrative] Pornesc clustering narativ...")
-                await asyncio.to_thread(run_narrative_clustering)
+                await _run_bertopic_task()
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -1805,70 +2123,57 @@ async def background_narrative_clusterer():
 
 
 async def background_emergent_analyzer():
-    """Rulează analiza ideologică emergentă periodic, independent de starea `running`."""
-    global grounded_discoverer, emergent_ideologies_cache, EMERGENT_ANALYSIS_RUN
-
-    # Așteptăm modelele NLP
+    """
+    Rulează analiza ideologică emergentă periodic, independent de starea `running`.
+    FIX #17: primul sleep de 1800s → redus la 300s dacă nu există date în cache.
+    """
+    wait_count = 0
     while not nlp_ready or similarity_model is None:
         await asyncio.sleep(10)
+        wait_count += 1
+        if wait_count > 180:
+            logger.warning("[Grounded] NLP nu s-a încărcat în 30 min, opresc așteptarea")
+            return
 
-    await asyncio.sleep(1800)
+    # FIX #17: dacă nu există cache, rulează mai repede (5 min vs 30 min)
+    initial_delay = 300 if emergent_ideologies_cache is None else 1800
+    logger.info(f"[Grounded] Prim run planificat în {initial_delay}s")
+    await asyncio.sleep(initial_delay)
 
     while True:
         try:
-            logger.info("[Grounded] Pornesc analiza emergentă...")
-
-            all_messages: dict = {}
-            channels = db_get_all_channels()
-
-            for channel in channels:
-                messages = db_get_recent_messages(channel, days=7)
-                if len(messages) >= 5:
-                    all_messages[channel] = messages[:20]
-
-            if len(all_messages) >= 3:
-                grounded_discoverer = GroundedIdeologyDiscoverer(
-                    similarity_model=similarity_model,
-                    sentiment_pipeline=sentiment_pipeline,
-                    ner_pipeline=ner_pipeline
-                )
-
-                # FIX: timeout corect cu asyncio.wait_for, nu signal.alarm()
-                # 🔥 FIX THREAD + ASYNC: Use loop.run_in_executor for better control
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    grounded_discoverer.discover_ideologies,
-                    all_messages,
-                    3
-                )
-
-                result["analysis_timestamp"] = datetime.now().isoformat()
-                result["channels_analyzed"] = len(all_messages)
-                result["total_channels"] = len(channels)
-
-                emergent_ideologies_cache = result
-                EMERGENT_ANALYSIS_RUN = datetime.now()
-
-                await asyncio.to_thread(db_save_emergent_ideologies, result)
-                logger.info(
-                    f"[Grounded] Analiză completă: "
-                    f"{len(result.get('emergent_ideologies', []))} ideologii descoperite, "
-                    f"{len(all_messages)} canale analizate"
-                )
-            else:
-                logger.info(
-                    f"[Grounded] Prea puține canale ({len(all_messages)}), amân analiza"
-                )
-
+            if not _emergent_analysis_running:
+                logger.info("[Grounded] Pornesc analiza emergentă (background)...")
+                await _run_emergent_analysis_task()
         except asyncio.CancelledError:
             break
-        except asyncio.TimeoutError:
-            logger.error("[Grounded] Analiza emergentă a depășit 600 s — omisă.")
         except Exception as e:
             logger.error(f"[Grounded] Eroare: {e}", exc_info=True)
 
         await asyncio.sleep(EMERGENT_ANALYSIS_INTERVAL_HOURS * 3600)
+
+
+async def background_similarity_detector():
+    """Detectează similarități între canale periodic."""
+    wait_count = 0
+    while not nlp_ready or similarity_model is None:
+        await asyncio.sleep(10)
+        wait_count += 1
+        if wait_count > 180:
+            return
+
+    await asyncio.sleep(300)
+
+    while True:
+        try:
+            if len(channels_set) >= 2:
+                logger.info("[Similarity] Detectez similarități între canale...")
+                await detect_channel_similarities()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[Similarity] Eroare detecție: {e}", exc_info=True)
+        await asyncio.sleep(600)
 
 
 async def background_scraper():
@@ -1932,6 +2237,9 @@ async def background_scraper():
             if new_msgs:
                 logger.info(f"[Scraper] Găsite {len(new_msgs)} mesaje noi în {ch}")
                 await asyncio.to_thread(db_insert_messages, ch, new_msgs)
+                if ch not in ch_msgs_set:
+                    ch_msgs_set[ch] = set()
+                ch_msgs_set[ch].update(new_msgs)
                 await asyncio.to_thread(update_embeddings_incremental, ch, new_msgs)
                 await asyncio.to_thread(update_narrative_profile_for_channel, ch)
                 if nlp_ready:
@@ -1956,7 +2264,6 @@ async def background_scraper():
             await asyncio.sleep(1)
             continue
 
-        # Purge zilnic — șterge mesajele mai vechi de 30 de zile
         if (datetime.now() - _last_purge).total_seconds() > 86400:
             _last_purge = datetime.now()
             try:
@@ -1986,26 +2293,12 @@ async def background_scraper():
 # PARTEA 8: STARTUP ȘI WEBSOCKET
 # ============================================================================
 
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Pornire aplicație.")
-    set_memory_limit()
-    db_init()
-    db_warm_up_state()
-    loop = asyncio.get_running_loop()
-    start_nlp_loading(loop)
-    # background_narrative_clusterer și background_emergent_analyzer pornesc imediat
-    # și rulează independent de starea `running`.
-    # background_scraper se pornește explicit la comanda WebSocket "start".
-    asyncio.create_task(background_narrative_clusterer())
-    asyncio.create_task(background_emergent_analyzer())
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     global running, paused, channels_set, nodes_data, edges_data, edges_type, posts_history
     global target_channel, keywords_list, similarity_mode, analysis_mode
-    global background_tasks, dirty_channels, ch_msgs_cache, ch_embs_cache, ch_style_cache, ch_lang_cache, ch_msgs_set  # 🔥 BUG FIX #3: Extra globals
+    global background_tasks, dirty_channels
+    global ch_msgs_cache, ch_embs_cache, ch_style_cache, ch_lang_cache, ch_msgs_set
 
     await manager.connect(websocket)
     try:
@@ -2020,7 +2313,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 if action == "pong":
                     continue
 
-                # 🔥 BUG FIX #3: Handle keywords_list update properly
                 if action == "set_keywords":
                     keywords_list.clear()
                     keywords_list.extend(cmd.get("keywords", []))
@@ -2051,7 +2343,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     await manager.send_state()
 
                 elif action == "reset":
-                    # 🔥 BUG FIX #3: Proper global variable updates
                     channels_set.clear()
                     nodes_data.clear()
                     edges_data.clear()
@@ -2063,7 +2354,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     ch_style_cache.clear()
                     ch_lang_cache.clear()
                     dirty_channels.clear()
-                    nlp_msg_cache.clear()  # 🔥 Also clear NLP cache on reset
+                    nlp_msg_cache.clear()
                     target_channel = None
                     running = False
                     paused = False
@@ -2085,8 +2376,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     if not running:
                         running = True
                         paused = False
-                        # Pornit doar background_scraper la comanda "start".
-                        # background_emergent_analyzer rulează deja din startup_event.
                         t1 = asyncio.create_task(background_scraper())
                         background_tasks.append(t1)
                     await manager.send_state()
