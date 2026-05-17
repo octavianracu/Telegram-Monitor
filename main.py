@@ -1269,7 +1269,7 @@ async def _run_emergent_analysis_task():
                 all_messages,
                 3
             ),
-            timeout=480.0  # FIX #11: 480s pentru a acoperi 60 canale
+            timeout=1200.0  # FIX #11: 480s pentru a acoperi 60 canale
         )
 
         result["analysis_timestamp"] = datetime.now().isoformat()
