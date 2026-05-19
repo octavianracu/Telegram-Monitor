@@ -671,6 +671,8 @@ EDGE_DECAY_FACTOR = 0.85
 EDGE_MIN_SCORE = 1.0
 # Vârsta maximă (zile) după care o legătură inactivă e ștearsă
 EDGE_MAX_AGE_DAYS = 7
+# Numărul maxim de vecini (legături) pe care le păstrăm pentru fiecare canal
+K_SIMILAR_NEIGHBORS = 10
 
 # Narrative state
 narrative_topics_cache: list = []
@@ -1126,7 +1128,8 @@ def get_embedding_matrix(ch: str):
 async def detect_channel_similarities():
     """
     Compară embedding-urile medii ale canalelor și actualizează legăturile.
-    Folosește SIMILARITY_THRESHOLD ridicat (0.80) pentru a limita legăturile false.
+    Folosește SIMILARITY_THRESHOLD (0.80) și păstrează doar primele K_SIMILAR_NEIGHBORS
+    cele mai similare canale pentru fiecare nod, pentru a menține rețeaua rară.
     """
     global similarity_model, cosine_similarity
 
@@ -1150,33 +1153,48 @@ async def detect_channel_similarities():
     ch_list = list(channel_embeddings.keys())
     new_edges = []
 
-    for i in range(len(ch_list)):
-        for j in range(i + 1, len(ch_list)):
-            ch1, ch2 = ch_list[i], ch_list[j]
-            emb1 = channel_embeddings[ch1]
+    # Pentru fiecare canal, calculează similaritățile cu toate celelalte
+    # și păstrează doar primele K_SIMILAR_NEIGHBORS care trec de prag.
+    for i, ch1 in enumerate(ch_list):
+        emb1 = channel_embeddings[ch1]
+        if np.linalg.norm(emb1) == 0:
+            continue
+
+        # Listă de (similarity, ch2)
+        sims = []
+        for j, ch2 in enumerate(ch_list):
+            if i == j:
+                continue
             emb2 = channel_embeddings[ch2]
+            if np.linalg.norm(emb2) == 0:
+                continue
             try:
-                if np.linalg.norm(emb1) == 0 or np.linalg.norm(emb2) == 0:
-                    continue
-                sim_matrix = cosine_similarity([emb1, emb2])
+                sim_matrix = cosine_similarity([emb1], [emb2])
                 similarity_score = float(sim_matrix[0][1])
                 if np.isnan(similarity_score):
                     continue
                 similarity_score = float(np.clip(similarity_score, 0.0, 1.0))
                 if similarity_score >= SIMILARITY_THRESHOLD:
-                    await asyncio.to_thread(db_update_edge_cumulative, ch1, ch2, similarity_score)
-                    new_edges.append({
-                        "from": ch1,
-                        "to": ch2,
-                        "value": similarity_score,
-                        "title": f"Similaritate: {(similarity_score * 100):.1f}%"
-                    })
-                    logger.info(
-                        f"[Similarity] Legătură detectată: {ch1} <-> {ch2} "
-                        f"(similaritate: {(similarity_score * 100):.1f}%)"
-                    )
+                    sims.append((similarity_score, ch2))
             except Exception as e:
                 logger.debug(f"[Similarity] Eroare comparare {ch1}-{ch2}: {e}")
+
+        # Sortează descrescător după similaritate
+        sims.sort(key=lambda x: x[0], reverse=True)
+
+        # Păstrează doar primele K_SIMILAR_NEIGHBORS
+        for similarity_score, ch2 in sims[:K_SIMILAR_NEIGHBORS]:
+            await asyncio.to_thread(db_update_edge_cumulative, ch1, ch2, similarity_score)
+            new_edges.append({
+                "from": ch1,
+                "to": ch2,
+                "value": similarity_score,
+                "title": f"Similaritate: {(similarity_score * 100):.1f}%"
+            })
+            logger.info(
+                f"[Similarity] Legătură detectată: {ch1} <-> {ch2} "
+                f"(similaritate: {(similarity_score * 100):.1f}%)"
+            )
 
     if new_edges:
         await manager.broadcast(
