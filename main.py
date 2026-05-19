@@ -64,7 +64,6 @@ async def lifespan(app: FastAPI):
     db_warm_up_state()
     loop = asyncio.get_running_loop()
     start_nlp_loading(loop)
-    # FIX #1: pornire task-uri background cu referințe păstrate pentru a evita GC prematur
     t1 = asyncio.create_task(background_narrative_clusterer())
     t2 = asyncio.create_task(background_emergent_analyzer())
     t3 = asyncio.create_task(background_similarity_detector())
@@ -81,7 +80,6 @@ app = FastAPI(lifespan=lifespan)
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# FIX #1: listă globală pentru task-uri sistem (evită GC prematur)
 _system_background_tasks: list = []
 
 
@@ -128,7 +126,6 @@ class GroundedIdeologyDiscoverer:
         """Proces iterativ de descoperire a ideologiilor emergente."""
         logger.info("[Grounded] Încep descoperirea ideologiilor emergente...")
         try:
-            # FIX #2: limitează numărul de canale și mesaje per canal pentru performanță
             MAX_CHANNELS = 60
             if len(all_messages) > MAX_CHANNELS:
                 logger.warning(
@@ -218,7 +215,6 @@ class GroundedIdeologyDiscoverer:
         concepts_by_channel: Dict = defaultdict(list)
 
         for channel, messages in all_messages.items():
-            # FIX #3: limitează mesajele per canal la 20 pentru viteză
             for msg in messages[:20]:
                 concepts = self._extract_concepts(msg)
                 try:
@@ -251,7 +247,6 @@ class GroundedIdeologyDiscoverer:
                     if sent_key in unique_concepts[key]["sentiment_distribution"]:
                         unique_concepts[key]["sentiment_distribution"][sent_key] += 1
 
-        # Prag adaptiv — dacă avem puține canale, relaxăm filtrul
         n_channels = len(all_messages)
         min_channels = max(2, n_channels // 3) if n_channels >= 3 else 1
         min_frequency = 2 if n_channels <= 4 else 3
@@ -320,7 +315,6 @@ class GroundedIdeologyDiscoverer:
         if len(concept_list) < 10:
             return []
 
-        # FIX #4: limită mai strictă pentru axial coding (150 → 100)
         MAX_CONCEPTS = 100
         if len(concept_list) > MAX_CONCEPTS:
             logger.warning(
@@ -668,6 +662,16 @@ TRANSITIVE_PENALTY_L3 = 0.35
 DECAY_BASE = 0.98
 DECAY_INFERRED = {"hibrid": 0.85, "tranzitiv": 0.80}
 
+# ── Praguri pentru gestionarea legăturilor ────────────────────────────────────
+# Similaritate minimă pentru a crea/actualiza o legătură (ridicat față de 0.65)
+SIMILARITY_THRESHOLD = 0.80
+# Factor de decay aplicat la fiecare actualizare (scorul vechi se înmulțește cu acesta)
+EDGE_DECAY_FACTOR = 0.85
+# Scor minim sub care legătura e ștearsă din DB la pruning
+EDGE_MIN_SCORE = 1.0
+# Vârsta maximă (zile) după care o legătură inactivă e ștearsă
+EDGE_MAX_AGE_DAYS = 7
+
 # Narrative state
 narrative_topics_cache: list = []
 narrative_profiles_cache: dict = {}
@@ -676,13 +680,10 @@ NARRATIVE_RUN_INTERVAL_HOURS = 24
 
 # Grounded Theory state
 grounded_discoverer = None
-# FIX #5: emergent_ideologies_cache este None când nu există date (nu dict gol)
-# Aceasta permite distincția clară între "neîncărcat" și "analiză goală"
 emergent_ideologies_cache: Optional[dict] = None
 EMERGENT_ANALYSIS_RUN: Optional[datetime] = None
 EMERGENT_ANALYSIS_INTERVAL_HOURS = 24
 
-# FIX #6: flag pentru a preveni rulări paralele ale analizei emergente
 _emergent_analysis_running = False
 _bertopic_running = False
 
@@ -691,7 +692,7 @@ def db_connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=10000")  # FIX #7: timeout 10s pentru locks
+    conn.execute("PRAGMA busy_timeout=10000")
     return conn
 
 
@@ -819,6 +820,15 @@ def db_get_all_channels() -> list:
 
 
 def db_update_edge_cumulative(ch1: str, ch2: str, score_delta: float):
+    """
+    Actualizează legătura dintre două canale cu decay exponențial.
+    - Normalizează ordinea (ch1 < ch2) pentru a evita duplicate (a,b) și (b,a).
+    - Aplică EDGE_DECAY_FACTOR pe scorul existent înainte de a adăuga noul scor.
+    """
+    # Normalizare ordine — garantează o singură cheie per pereche
+    if ch1 > ch2:
+        ch1, ch2 = ch2, ch1
+
     now = datetime.now().isoformat()
     with _db_lock:
         conn = db_connect()
@@ -826,15 +836,20 @@ def db_update_edge_cumulative(ch1: str, ch2: str, score_delta: float):
             INSERT INTO edges_cumulative(ch1, ch2, score_total, hits, first_seen, last_seen)
             VALUES (?, ?, ?, 1, ?, ?)
             ON CONFLICT(ch1, ch2) DO UPDATE SET
-                score_total = score_total + excluded.score_total,
-                hits = hits + 1,
-                last_seen = excluded.last_seen
-        """, (ch1, ch2, score_delta, now, now))
+                score_total = (score_total * ?) + excluded.score_total,
+                hits        = hits + 1,
+                last_seen   = excluded.last_seen
+        """, (ch1, ch2, score_delta, now, now, EDGE_DECAY_FACTOR))
         conn.commit()
         conn.close()
 
 
 def db_get_cumulative_scores() -> dict:
+    """
+    Returnează toate legăturile cu scor pozitiv.
+    Deduplicare implicită — fiecare pereche apare o singură dată datorită
+    normalizării ordinii în db_update_edge_cumulative.
+    """
     with _db_lock:
         conn = db_connect()
         rows = conn.execute(
@@ -844,14 +859,29 @@ def db_get_cumulative_scores() -> dict:
     return {(r[0], r[1]): r[2] for r in rows}
 
 
-def db_save_emergent_ideologies(data: Dict):
+def db_prune_weak_edges(min_score: float = EDGE_MIN_SCORE,
+                        max_age_days: int = EDGE_MAX_AGE_DAYS):
     """
-    Serializează explicit numpy → liste înainte de a salva în DB.
-    Salvează și ultimele N analize pentru istoric (max 5).
+    Șterge din DB legăturile:
+    - cu scor_total sub min_score (prea slabe pentru a fi relevante), SAU
+    - nevăzute în ultimele max_age_days zile (canale inactive/inactive).
     """
+    cutoff = (datetime.now() - timedelta(days=max_age_days)).isoformat()
     with _db_lock:
         conn = db_connect()
-        # FIX #8: păstrează cel mult 5 analize în DB (curăță cele vechi)
+        deleted = conn.execute("""
+            DELETE FROM edges_cumulative
+            WHERE score_total < ? OR last_seen < ?
+        """, (min_score, cutoff)).rowcount
+        conn.commit()
+        conn.close()
+    if deleted > 0:
+        logger.info(f"[Pruning] Șterse {deleted} legături slabe/vechi din DB")
+
+
+def db_save_emergent_ideologies(data: Dict):
+    with _db_lock:
+        conn = db_connect()
         conn.execute(
             """DELETE FROM emergent_ideologies WHERE id NOT IN (
                SELECT id FROM emergent_ideologies
@@ -1094,6 +1124,10 @@ def get_embedding_matrix(ch: str):
 
 
 async def detect_channel_similarities():
+    """
+    Compară embedding-urile medii ale canalelor și actualizează legăturile.
+    Folosește SIMILARITY_THRESHOLD ridicat (0.80) pentru a limita legăturile false.
+    """
     global similarity_model, cosine_similarity
 
     if similarity_model is None or cosine_similarity is None:
@@ -1114,7 +1148,6 @@ async def detect_channel_similarities():
         return
 
     ch_list = list(channel_embeddings.keys())
-    similarity_threshold = 0.65
     new_edges = []
 
     for i in range(len(ch_list)):
@@ -1130,7 +1163,7 @@ async def detect_channel_similarities():
                 if np.isnan(similarity_score):
                     continue
                 similarity_score = float(np.clip(similarity_score, 0.0, 1.0))
-                if similarity_score >= similarity_threshold:
+                if similarity_score >= SIMILARITY_THRESHOLD:
                     await asyncio.to_thread(db_update_edge_cumulative, ch1, ch2, similarity_score)
                     new_edges.append({
                         "from": ch1,
@@ -1180,25 +1213,18 @@ async def get_nlp_status():
 
 @app.get("/api/discover_ideologies")
 async def discover_emergent_ideologies(force: bool = False):
-    """
-    Rulează descoperirea ideologiilor emergente folosind Grounded Theory.
-    FIX #9: endpoint este non-blocant — întoarce imediat dacă analiza e deja în curs.
-    FIX #10: returnează cache din DB dacă există și force=False.
-    """
     global grounded_discoverer, emergent_ideologies_cache, EMERGENT_ANALYSIS_RUN
     global _emergent_analysis_running
 
     if not nlp_ready or similarity_model is None:
         return {"status": "error", "message": "Modelele NLP nu sunt încă gata."}
 
-    # FIX #9: dacă rulează deja, nu lansăm a doua instanță
     if _emergent_analysis_running:
         return {
             "status": "running",
             "message": "Analiza emergentă este deja în curs. Verifică /api/emergent_ideologies."
         }
 
-    # FIX #10: returnează cache valid fără a relansa
     if not force and emergent_ideologies_cache is not None:
         return {
             "status": "cached",
@@ -1206,7 +1232,6 @@ async def discover_emergent_ideologies(force: bool = False):
             "last_run": EMERGENT_ANALYSIS_RUN.isoformat() if EMERGENT_ANALYSIS_RUN else None
         }
 
-    # Lansează în background și returnează imediat
     asyncio.create_task(_run_emergent_analysis_task())
     return {
         "status": "started",
@@ -1215,11 +1240,6 @@ async def discover_emergent_ideologies(force: bool = False):
 
 
 async def _run_emergent_analysis_task():
-    """
-    Task asincron care rulează analiza emergentă în background.
-    FIX #6: flag de blocare împotriva rulărilor paralele.
-    FIX #2: limită strictă de canale și mesaje.
-    """
     global grounded_discoverer, emergent_ideologies_cache, EMERGENT_ANALYSIS_RUN
     global _emergent_analysis_running
 
@@ -1241,9 +1261,13 @@ async def _run_emergent_analysis_task():
             logger.warning(
                 f"[Grounded] Prea puține canale cu mesaje ({len(all_messages)}), anulat."
             )
+            await manager.broadcast(safe_json_dumps({
+                "type": "emergent_progress",
+                "step": "error",
+                "details": "Prea puține canale cu mesaje"
+            }))
             return
 
-        # FIX #2: limitare strictă la 60 canale pentru a evita timeout
         MAX_CHANNELS_ANALYSIS = 60
         if len(all_messages) > MAX_CHANNELS_ANALYSIS:
             logger.warning(
@@ -1269,14 +1293,13 @@ async def _run_emergent_analysis_task():
                 all_messages,
                 3
             ),
-            timeout=1200.0  # FIX #11: 480s pentru a acoperi 60 canale
+            timeout=1200.0
         )
 
         result["analysis_timestamp"] = datetime.now().isoformat()
         result["channels_analyzed"] = len(all_messages)
         result["total_channels"] = len(all_known_channels)
 
-        # FIX #5: înlocuire completă (nu .update()) pentru a evita date reziduale
         emergent_ideologies_cache = result
         EMERGENT_ANALYSIS_RUN = datetime.now()
 
@@ -1287,23 +1310,34 @@ async def _run_emergent_analysis_task():
             f"{len(all_messages)} canale"
         )
 
+        await manager.broadcast(safe_json_dumps({
+            "type": "emergent_progress",
+            "step": "completed",
+            "details": f"Analiză completă: {len(result.get('emergent_ideologies', []))} ideologii"
+        }))
+
     except asyncio.TimeoutError:
-        logger.error("[Grounded] Analiza a depășit 480s — omisă.")
+        logger.error("[Grounded] Analiza a depășit 1200s — omisă.")
+        await manager.broadcast(safe_json_dumps({
+            "type": "emergent_progress",
+            "step": "timeout",
+            "details": "Analiza a depășit timeout-ul"
+        }))
     except Exception as e:
         logger.error(f"[Grounded] Eroare în task: {e}", exc_info=True)
+        await manager.broadcast(safe_json_dumps({
+            "type": "emergent_progress",
+            "step": "error",
+            "details": f"Eroare: {str(e)}"
+        }))
     finally:
         _emergent_analysis_running = False
 
 
 @app.get("/api/emergent_ideologies")
 async def get_emergent_ideologies():
-    """
-    Returnează ultimele ideologii emergente descoperite.
-    FIX #12: timeout rapid (nu blochează), cu fallback la DB.
-    """
     global emergent_ideologies_cache, EMERGENT_ANALYSIS_RUN
 
-    # RAM cache prezent
     if emergent_ideologies_cache is not None:
         return {
             "status": "success",
@@ -1312,7 +1346,6 @@ async def get_emergent_ideologies():
             "analysis_running": _emergent_analysis_running
         }
 
-    # FIX #12: timeout scurt pentru citirea din DB (nu mai mult de 5s)
     try:
         cached = await asyncio.wait_for(
             asyncio.to_thread(db_get_emergent_ideologies),
@@ -1322,7 +1355,6 @@ async def get_emergent_ideologies():
         cached = None
 
     if cached:
-        # FIX #5: înlocuire completă, nu .update()
         emergent_ideologies_cache = cached
         ts_str = cached.get("analysis_timestamp")
         if ts_str and EMERGENT_ANALYSIS_RUN is None:
@@ -1347,11 +1379,9 @@ async def get_emergent_ideologies():
 
 @app.get("/api/emergent_ideology/{channel}")
 async def get_channel_emergent_ideology(channel: str):
-    """Returnează profilul ideologic emergent pentru un canal specific."""
     global emergent_ideologies_cache
 
     if emergent_ideologies_cache is None:
-        # FIX #12: timeout scurt
         try:
             cached = await asyncio.wait_for(
                 asyncio.to_thread(db_get_emergent_ideologies),
@@ -1403,7 +1433,6 @@ async def get_channel_emergent_ideology(channel: str):
 
 @app.get("/api/emergent_saturation")
 async def get_saturation_status():
-    """Returnează statusul saturației teoretice."""
     global emergent_ideologies_cache
 
     if emergent_ideologies_cache is None:
@@ -1445,9 +1474,6 @@ async def get_saturation_status():
 
 @app.get("/api/narratives")
 async def get_narratives():
-    """
-    FIX #13: timeout explicit pe toate operațiile DB pentru a preveni blocarea.
-    """
     try:
         profiles = await asyncio.wait_for(
             asyncio.to_thread(db_get_all_narrative_profiles),
@@ -1507,10 +1533,6 @@ async def rebuild_profiles():
 
 @app.get("/api/run_bertopic")
 async def run_bertopic_now():
-    """
-    FIX #14: BERTopic rulează în background task, nu blochează request-ul.
-    FIX #6: flag pentru a preveni rulări paralele.
-    """
     global _bertopic_running
 
     if not nlp_ready or similarity_model is None:
@@ -1523,7 +1545,6 @@ async def run_bertopic_now():
     if len(profiles) < 5:
         return {"status": "error", "message": f"Prea puține profile ({len(profiles)})."}
 
-    # FIX #14: lansează ca task asyncio (non-blocant)
     asyncio.create_task(_run_bertopic_task())
     return {
         "status": "started",
@@ -1532,7 +1553,6 @@ async def run_bertopic_now():
 
 
 async def _run_bertopic_task():
-    """Task asincron non-blocant pentru BERTopic."""
     global _bertopic_running
     if _bertopic_running:
         return
@@ -1605,6 +1625,60 @@ async def bimodal_export():
             })
 
     return {"nodes": nodes, "edges": edges}
+
+
+@app.get("/api/edge_stats")
+async def get_edge_stats():
+    """
+    Endpoint de diagnosticare: afișează statistici despre legăturile din DB.
+    Util pentru a monitoriza dacă pruning-ul funcționează corect.
+    """
+    with _db_lock:
+        conn = db_connect()
+        total = conn.execute("SELECT COUNT(*) FROM edges_cumulative").fetchone()[0]
+        above_threshold = conn.execute(
+            "SELECT COUNT(*) FROM edges_cumulative WHERE score_total >= ?",
+            (EDGE_MIN_SCORE,)
+        ).fetchone()[0]
+        avg_score = conn.execute(
+            "SELECT AVG(score_total) FROM edges_cumulative"
+        ).fetchone()[0] or 0
+        max_score = conn.execute(
+            "SELECT MAX(score_total) FROM edges_cumulative"
+        ).fetchone()[0] or 0
+        recent_cutoff = (datetime.now() - timedelta(days=EDGE_MAX_AGE_DAYS)).isoformat()
+        active_recent = conn.execute(
+            "SELECT COUNT(*) FROM edges_cumulative WHERE last_seen >= ?",
+            (recent_cutoff,)
+        ).fetchone()[0]
+        conn.close()
+
+    return {
+        "total_edges": total,
+        "edges_above_threshold": above_threshold,
+        "edges_recent_active": active_recent,
+        "avg_score": round(avg_score, 4),
+        "max_score": round(max_score, 4),
+        "similarity_threshold": SIMILARITY_THRESHOLD,
+        "edge_decay_factor": EDGE_DECAY_FACTOR,
+        "edge_min_score": EDGE_MIN_SCORE,
+        "edge_max_age_days": EDGE_MAX_AGE_DAYS,
+    }
+
+
+@app.get("/api/prune_edges")
+async def prune_edges_now():
+    """Declanșează manual pruning-ul legăturilor slabe/vechi."""
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(db_prune_weak_edges),
+            timeout=15.0
+        )
+        return {"status": "success", "message": "Pruning efectuat."}
+    except asyncio.TimeoutError:
+        return {"status": "error", "message": "Pruning a depășit 15s."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 # ============================================================================
@@ -1755,9 +1829,6 @@ def rebuild_narrative_profile_for_channel(channel: str):
 
 
 def run_narrative_clustering():
-    """
-    FIX #15: BERTopic cu limită de canale și documente pentru a evita OOM și timeout.
-    """
     global narrative_topics_cache, narrative_profiles_cache, _last_narrative_run
 
     try:
@@ -1772,7 +1843,6 @@ def run_narrative_clustering():
         logger.info("[Narrative] Prea puține profile pentru clustering.")
         return
 
-    # FIX #15: limitare la 150 canale pentru BERTopic (memorie și timp)
     MAX_CHANNELS_BERTOPIC = 150
     channels = list(profiles.keys())
     if len(channels) > MAX_CHANNELS_BERTOPIC:
@@ -1787,11 +1857,9 @@ def run_narrative_clustering():
 
     try:
         docs = []
-        # FIX #15: obține mesajele o singură dată pentru toate canalele
         recent_all = db_get_recent_messages_all_channels(days=7)
         for ch in channels:
             msgs = recent_all.get(ch, [])
-            # FIX #15: limitare la 20 mesaje per canal, max 200 cuvinte per doc
             doc_text = " ".join(msgs[:20])[:2000] if msgs else ch
             if not doc_text or len(doc_text.strip()) < 10:
                 doc_text = ch
@@ -1815,7 +1883,7 @@ def run_narrative_clustering():
             min_topic_size=3,
             nr_topics="auto",
             verbose=False,
-            calculate_probabilities=False,  # FIX #15: dezactivat pentru performanță
+            calculate_probabilities=False,
         )
 
         logger.info(f"[Narrative] Inițiez BERTopic cu {len(docs)} documente...")
@@ -1853,7 +1921,6 @@ def run_narrative_clustering():
         channel_topics: dict = {}
         for i, ch in enumerate(channels):
             t_id = int(topics[i])
-            # FIX #15: calculate_probabilities=False → probs e None sau 1D
             if probs is not None and hasattr(probs, "ndim") and probs.ndim == 2:
                 dist = {str(j): float(probs[i][j]) for j in range(probs.shape[1])}
             else:
@@ -2058,11 +2125,9 @@ def db_warm_up_state():
 
         logger.info(f"[WarmUp] Restaurate {len(channels_set)} canale.")
 
-    # Restaurează cache-ul de ideologii emergente din DB
     try:
         cached_ideologies = db_get_emergent_ideologies()
         if cached_ideologies:
-            # FIX #5: înlocuire completă (nu .update())
             emergent_ideologies_cache = cached_ideologies
             ts_str = cached_ideologies.get("analysis_timestamp")
             if ts_str:
@@ -2095,20 +2160,16 @@ def start_nlp_loading(loop=None):
 # ============================================================================
 
 async def background_narrative_clusterer():
-    """
-    Rulează clustering narativ periodic, independent de starea `running`.
-    FIX #16: primul sleep redus la 120s (nu 600s) pentru a rula mai repede după start.
-    """
-    # FIX #16: așteaptă NLP-ul, nu un timp fix
+    """Rulează clustering narativ periodic, independent de starea `running`."""
     wait_count = 0
     while not nlp_ready or similarity_model is None:
         await asyncio.sleep(10)
         wait_count += 1
-        if wait_count > 180:  # max 30 min
+        if wait_count > 180:
             logger.warning("[Narrative] NLP nu s-a încărcat în 30 min, opresc așteptarea")
             return
 
-    await asyncio.sleep(120)  # FIX #16: 2 min după NLP ready (nu 10 min fix)
+    await asyncio.sleep(120)
 
     while True:
         try:
@@ -2123,10 +2184,7 @@ async def background_narrative_clusterer():
 
 
 async def background_emergent_analyzer():
-    """
-    Rulează analiza ideologică emergentă periodic, independent de starea `running`.
-    FIX #17: primul sleep de 1800s → redus la 300s dacă nu există date în cache.
-    """
+    """Rulează analiza ideologică emergentă periodic."""
     wait_count = 0
     while not nlp_ready or similarity_model is None:
         await asyncio.sleep(10)
@@ -2135,7 +2193,6 @@ async def background_emergent_analyzer():
             logger.warning("[Grounded] NLP nu s-a încărcat în 30 min, opresc așteptarea")
             return
 
-    # FIX #17: dacă nu există cache, rulează mai repede (5 min vs 30 min)
     initial_delay = 300 if emergent_ideologies_cache is None else 1800
     logger.info(f"[Grounded] Prim run planificat în {initial_delay}s")
     await asyncio.sleep(initial_delay)
@@ -2154,7 +2211,12 @@ async def background_emergent_analyzer():
 
 
 async def background_similarity_detector():
-    """Detectează similarități între canale periodic."""
+    """
+    Detectează similarități între canale periodic.
+    După fiecare rundă de detecție rulează și pruning-ul legăturilor slabe/vechi,
+    pentru a menține rețeaua sparse și relevantă.
+    Intervalul este de 3600s (1 oră) în loc de 600s pentru a reduce zgomotul.
+    """
     wait_count = 0
     while not nlp_ready or similarity_model is None:
         await asyncio.sleep(10)
@@ -2169,11 +2231,14 @@ async def background_similarity_detector():
             if len(channels_set) >= 2:
                 logger.info("[Similarity] Detectez similarități între canale...")
                 await detect_channel_similarities()
+                # Pruning imediat după detecție — șterge legăturile slabe/vechi
+                await asyncio.to_thread(db_prune_weak_edges)
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.error(f"[Similarity] Eroare detecție: {e}", exc_info=True)
-        await asyncio.sleep(600)
+        # O dată pe oră — suficient pentru coordonare, elimină zgomotul de la 600s
+        await asyncio.sleep(3600)
 
 
 async def background_scraper():
