@@ -1849,6 +1849,8 @@ def rebuild_narrative_profile_for_channel(channel: str):
 def run_narrative_clustering():
     global narrative_topics_cache, narrative_profiles_cache, _last_narrative_run
 
+    # ... (păstrăm primele linii neschimbate până la crearea docs)
+
     try:
         from bertopic import BERTopic
         from sklearn.feature_extraction.text import CountVectorizer
@@ -1873,28 +1875,37 @@ def run_narrative_clustering():
     logger.info(f"[Narrative] BERTopic pe {len(channels)} canale...")
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    # Construim documentele
+    docs = []
+    recent_all = db_get_recent_messages_all_channels(days=7)
+    for ch in channels:
+        msgs = recent_all.get(ch, [])
+        doc_text = " ".join(msgs[:20])[:2000] if msgs else ch
+        if not doc_text or len(doc_text.strip()) < 10:
+            doc_text = ch
+        docs.append(doc_text)
+
+    # Dacă documentele sunt prea puține sau goale, ieșim
+    if len(docs) < 3:
+        logger.warning("[Narrative] Prea puține documente pentru clustering.")
+        return
+
+    # Vectorizer cu stopwords
+    STOPWORDS_RO = {"și", "de", "la", "în", "că", "cu", "pe", "din", "pentru", "este"}
+    STOPWORDS_RU = {"и", "в", "не", "на", "с", "что", "как", "по", "из", "от"}
+    STOPWORDS_COMMON = {"http", "https", "www", "com", "md", "ro", "ru"}
+    all_stopwords = list(STOPWORDS_RO | STOPWORDS_RU | STOPWORDS_COMMON)
+
+    vectorizer = CountVectorizer(
+        ngram_range=(1, 2),
+        stop_words=all_stopwords,
+        min_df=2,
+        max_features=5000,
+        token_pattern=r"(?u)\b[a-zA-ZÀ-žА-яёÀ-ÿ]{3,}\b",
+    )
+
+    # Încercăm BERTopic; dacă eșuează, folosim KMeans pe embeddings
     try:
-        docs = []
-        recent_all = db_get_recent_messages_all_channels(days=7)
-        for ch in channels:
-            msgs = recent_all.get(ch, [])
-            doc_text = " ".join(msgs[:20])[:2000] if msgs else ch
-            if not doc_text or len(doc_text.strip()) < 10:
-                doc_text = ch
-            docs.append(doc_text)
-
-        STOPWORDS_RO = {"și", "de", "la", "în", "că", "cu", "pe", "din", "pentru", "este"}
-        STOPWORDS_RU = {"и", "в", "не", "на", "с", "что", "как", "по", "из", "от"}
-        STOPWORDS_COMMON = {"http", "https", "www", "com", "md", "ro", "ru"}
-        all_stopwords = list(STOPWORDS_RO | STOPWORDS_RU | STOPWORDS_COMMON)
-
-        vectorizer = CountVectorizer(
-            ngram_range=(1, 2),
-            stop_words=all_stopwords,
-            min_df=2,
-            max_features=5000,
-            token_pattern=r"(?u)\b[a-zA-ZÀ-žА-яёÀ-ÿ]{3,}\b",
-        )
         topic_model = BERTopic(
             embedding_model=similarity_model,
             vectorizer_model=vectorizer,
@@ -1903,7 +1914,6 @@ def run_narrative_clustering():
             verbose=False,
             calculate_probabilities=False,
         )
-
         logger.info(f"[Narrative] Inițiez BERTopic cu {len(docs)} documente...")
         topics, probs = topic_model.fit_transform(docs)
         gc.collect()
@@ -1922,6 +1932,7 @@ def run_narrative_clustering():
                 "size": int(row["Count"]),
             })
 
+        # Salvăm în DB
         with _db_lock:
             conn = db_connect()
             conn.executemany(
@@ -1936,6 +1947,7 @@ def run_narrative_clustering():
             conn.commit()
             conn.close()
 
+        # Asignăm topicuri canalelor
         channel_topics: dict = {}
         for i, ch in enumerate(channels):
             t_id = int(topics[i])
@@ -1945,39 +1957,108 @@ def run_narrative_clustering():
                 dist = {str(t_id): 1.0}
             channel_topics[ch] = {"distribution": dist, "dominant": t_id}
 
-        with _db_lock:
-            conn = db_connect()
-            for ch, data in channel_topics.items():
-                conn.execute(
-                    """UPDATE channel_narrative_profile
-                       SET topic_distribution=?, dominant_topic=?, last_updated=?
-                       WHERE channel=?""",
-                    (
-                        json.dumps(data["distribution"]),
-                        data["dominant"],
-                        datetime.now().isoformat(),
-                        ch
-                    )
-                )
-            conn.commit()
-            conn.close()
-
-        narrative_topics_cache = topics_to_save
-        narrative_profiles_cache = {
-            ch: {
-                "dominant_topic": channel_topics[ch]["dominant"],
-                "topic_distribution": channel_topics[ch]["distribution"]
-            }
-            for ch in channels
-        }
-        _last_narrative_run = datetime.now()
-        logger.info(
-            f"[Narrative] ✓ Clustering complet: {len(topics_to_save)} teme descoperite "
-            f"peste {len(channels)} canale."
-        )
-
     except Exception as e:
-        logger.error(f"[Narrative] Eroare BERTopic: {e}", exc_info=True)
+        logger.error(f"[Narrative] BERTopic a eșuat, folosesc KMeans fallback: {e}", exc_info=True)
+        # Fallback: KMeans pe embeddings
+        try:
+            # Obținem embeddings pentru fiecare canal
+            emb_list = []
+            valid_channels = []
+            for ch in channels:
+                emb = profiles[ch]["embedding"]
+                if emb is not None and np.linalg.norm(emb) > 0:
+                    emb_list.append(emb)
+                    valid_channels.append(ch)
+            if len(emb_list) < 3:
+                logger.warning("[Narrative] Prea puține embeddings valide pentru KMeans.")
+                return
+            emb_matrix = np.array(emb_list)
+            n_clusters = min(max(len(emb_list) // 10, 3), 15)
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            labels = kmeans.fit_predict(emb_matrix)
+            # Construim topicuri fictive
+            topics_to_save = []
+            for cluster_id in range(n_clusters):
+                # Găsim documentele din cluster
+                cluster_docs = [docs[valid_channels.index(ch)] for i, ch in enumerate(valid_channels) if labels[i] == cluster_id]
+                if not cluster_docs:
+                    continue
+                # Extragem cuvinte cheie simple (TF-IDF pe cluster)
+                from sklearn.feature_extraction.text import TfidfVectorizer
+                vec = TfidfVectorizer(max_features=10, stop_words=all_stopwords, token_pattern=r"(?u)\b[a-zA-ZÀ-žА-яёÀ-ÿ]{3,}\b")
+                try:
+                    tfidf = vec.fit_transform(cluster_docs)
+                    feature_names = vec.get_feature_names_out()
+                    # media tf-idf pe cluster
+                    avg_tfidf = np.asarray(tfidf.mean(axis=0)).ravel()
+                    top_indices = avg_tfidf.argsort()[-10:][::-1]
+                    keywords = [feature_names[i] for i in top_indices]
+                except:
+                    keywords = [f"topic_{cluster_id}"]
+                topics_to_save.append({
+                    "topic_id": cluster_id,
+                    "keywords": keywords,
+                    "size": len(cluster_docs),
+                })
+            # Salvăm în DB
+            with _db_lock:
+                conn = db_connect()
+                conn.executemany(
+                    """INSERT INTO narrative_topics(run_id, topic_id, keywords, size, created_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    [
+                        (run_id, t["topic_id"], json.dumps(t["keywords"]), t["size"],
+                         datetime.now().isoformat())
+                        for t in topics_to_save
+                    ]
+                )
+                conn.commit()
+                conn.close()
+            # Asignăm topicuri canalelor din KMeans
+            channel_topics = {}
+            for i, ch in enumerate(valid_channels):
+                t_id = int(labels[i])
+                channel_topics[ch] = {"distribution": {str(t_id): 1.0}, "dominant": t_id}
+            # Pentru canalele fără embedding (neincluse), le punem topic -1
+            for ch in channels:
+                if ch not in channel_topics:
+                    channel_topics[ch] = {"distribution": {}, "dominant": -1}
+            logger.info(f"[Narrative] Fallback KMeans a produs {len(topics_to_save)} topicuri.")
+        except Exception as e2:
+            logger.error(f"[Narrative] Și fallback-ul KMeans a eșuat: {e2}")
+            return
+
+    # Actualizăm profilele în DB
+    with _db_lock:
+        conn = db_connect()
+        for ch, data in channel_topics.items():
+            conn.execute(
+                """UPDATE channel_narrative_profile
+                   SET topic_distribution=?, dominant_topic=?, last_updated=?
+                   WHERE channel=?""",
+                (
+                    json.dumps(data["distribution"]),
+                    data["dominant"],
+                    datetime.now().isoformat(),
+                    ch
+                )
+            )
+        conn.commit()
+        conn.close()
+
+    narrative_topics_cache = topics_to_save
+    narrative_profiles_cache = {
+        ch: {
+            "dominant_topic": channel_topics[ch]["dominant"],
+            "topic_distribution": channel_topics[ch]["distribution"]
+        }
+        for ch in channels
+    }
+    _last_narrative_run = datetime.now()
+    logger.info(
+        f"[Narrative] ✓ Clustering complet: {len(topics_to_save)} teme descoperite "
+        f"peste {len(channels)} canale."
+    )
 
 
 # ============================================================================
